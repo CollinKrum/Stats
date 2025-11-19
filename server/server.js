@@ -36,6 +36,7 @@ app.post('/api/training-data', (req, res) => {
   if (!sport || !Array.isArray(rows)) {
     return res.status(400).json({ error: 'sport and rows required' });
   }
+  // front-end already sends combined rows when appending
   writeJson(`training_${sport}.json`, rows);
   res.json({ ok: true, count: rows.length });
 });
@@ -47,6 +48,15 @@ app.get('/api/training-data', (req, res) => {
 
   const data = readJson(`training_${sport}.json`) || [];
   res.json({ sport, rows: data });
+});
+
+// clear training data
+app.delete('/api/training-data', (req, res) => {
+  const sport = req.query.sport;
+  if (!sport) return res.status(400).json({ error: 'sport required' });
+
+  writeJson(`training_${sport}.json`, []);
+  res.json({ ok: true });
 });
 
 // save model
@@ -76,6 +86,16 @@ app.get('/api/model', (req, res) => {
   if (!data) return res.status(404).json({ error: 'no model stored' });
 
   res.json(data);
+});
+
+// delete model
+app.delete('/api/model', (req, res) => {
+  const sport = req.query.sport;
+  if (!sport) return res.status(400).json({ error: 'sport required' });
+
+  const fullPath = path.join(DATA_DIR, `model_${sport}.json`);
+  if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+  res.json({ ok: true });
 });
 
 app.listen(PORT, () => {
