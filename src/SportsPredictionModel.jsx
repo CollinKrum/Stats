@@ -511,95 +511,109 @@ const SportsPredictionModel = () => {
   // Training
   // -------------------------
   const trainModel = async () => {
-    if (trainingData.length < 20) {
-      alert('Need at least 20 games');
-      return;
-    }
+  if (trainingData.length < 20) {
+    alert('Need at least 20 games');
+    return;
+  }
 
-    const { features } = sports[selectedSport];
-    const usable = trainingData.filter(
-      (r) =>
-        r.winner === 0 ||
-        r.winner === 1 ||
-        r.winner === '0' ||
-        r.winner === '1'
+  const { features } = sports[selectedSport];
+  const usable = trainingData.filter(
+    (r) =>
+      r.winner === 0 ||
+      r.winner === 1 ||
+      r.winner === '0' ||
+      r.winner === '1'
+  );
+
+  if (!usable.length) {
+    alert('No rows with winner = 0 or 1');
+    return;
+  }
+
+  const X = usable.map((row) =>
+    features.map((f) => {
+      if (f.includes('moneyline')) {
+        const p1 = moneylineToFairProb(row.team1_moneyline);
+        const p2 = moneylineToFairProb(row.team2_moneyline);
+        const { p1: fair1, p2: fair2 } = removeVig(p1, p2);
+        return f === 'team1_moneyline' ? fair1 : fair2;
+      }
+      return Number(row[f] ?? 0);
+    })
+  );
+
+  const y = usable.map((r) => Number(r.winner));
+
+  setIsTraining(true);
+
+  let model;
+  let stats;
+  let importance;
+  let calib;
+
+  // 👉 1) Do the actual training. If THIS fails, we truly fail.
+  try {
+    const result = trainLogisticRegression(X, y, {
+      learningRate: 0.12,
+      epochs: 500,
+      lambda: 0.012,
+    });
+
+    const { weights, bias, means, stds, accuracy, samplesUsed, calibration: c } =
+      result;
+
+    model = { weights, bias, means, stds, features };
+    stats = {
+      accuracy: (accuracy * 100).toFixed(1),
+      samplesUsed,
+    };
+    calib = c;
+
+    importance = features
+      .map((f, i) => ({ feature: f, weight: Math.abs(weights[i]) }))
+      .sort((a, b) => b.weight - a.weight);
+
+    // Update UI state
+    setModelParams(model);
+    setModelTrained(true);
+    setTrainingStats(stats);
+    setCalibration(calib);
+    setFeatureImportance(importance);
+
+    alert(
+      `PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(
+        1
+      )}% accuracy`
     );
-
-    if (!usable.length) {
-      alert('No rows with winner = 0 or 1');
-      return;
-    }
-
-    const X = usable.map((row) =>
-      features.map((f) => {
-        if (f.includes('moneyline')) {
-          const p1 = moneylineToFairProb(row.team1_moneyline);
-          const p2 = moneylineToFairProb(row.team2_moneyline);
-          const { p1: fair1, p2: fair2 } = removeVig(p1, p2);
-          return f === 'team1_moneyline' ? fair1 : fair2;
-        }
-        return Number(row[f] ?? 0);
-      })
+  } catch (err) {
+    console.error('Training error', err);
+    alert(
+      `Training failed: ${
+        err?.message || 'unexpected error during optimization'
+      }`
     );
+    setIsTraining(false);
+    return;
+  }
 
-    const y = usable.map((r) => Number(r.winner));
+  // 👉 2) Try to save to backend, but DO NOT treat failure as a training failure
+  try {
+    await fetch(`${API_BASE}/api/model`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sport: selectedSport,
+        modelParams: model,
+        trainingStats: stats,
+      }),
+    });
+  } catch (err) {
+    console.warn('Failed to save model to backend (training still OK):', err);
+  } finally {
+    setIsTraining(false);
+  }
+};
 
-    setIsTraining(true);
-
-    try {
-      const result = trainLogisticRegression(X, y, {
-        learningRate: 0.12,
-        epochs: 500,
-        lambda: 0.012,
-      });
-      const {
-        weights,
-        bias,
-        means,
-        stds,
-        accuracy,
-        samplesUsed,
-        calibration: calib,
-      } = result;
-
-      const model = { weights, bias, means, stds, features };
-      setModelParams(model);
-      setModelTrained(true);
-      const stats = {
-        accuracy: (accuracy * 100).toFixed(1),
-        samplesUsed,
-      };
-      setTrainingStats(stats);
-      setCalibration(calib);
-
-      const importance = features
-        .map((f, i) => ({ feature: f, weight: Math.abs(weights[i]) }))
-        .sort((a, b) => b.weight - a.weight);
-      setFeatureImportance(importance);
-
-      // Save to backend
-      await fetch(`${API_BASE}/api/model`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sport: selectedSport,
-          modelParams: model,
-          trainingStats: stats,
-        }),
-      });
-
-      alert(
-        `PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(
-          1
-        )}% accuracy`
-      );
-    } catch (err) {
-      console.error(err);
-      alert('Training failed');
-    } finally {
-      setIsTraining(false);
-    }
-  };
 
   // -------------------------
   // Prediction + EV
