@@ -1,13 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
   Upload,
-  TrendingUp,
   Database,
   Target,
-  BarChart3,
-  AlertCircle,
   Download,
-  Trash2,
   Sparkles,
 } from 'lucide-react';
 
@@ -26,7 +22,7 @@ const SportsPredictionModel = () => {
   const [trainingStats, setTrainingStats] = useState(null);
   const [featureImportance, setFeatureImportance] = useState(null);
   const [calibration, setCalibration] = useState(null);
-  const [appendMode, setAppendMode] = useState(false); // ✅ append / replace toggle
+  const [appendMode, setAppendMode] = useState(false);
 
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
 
@@ -73,13 +69,13 @@ const SportsPredictionModel = () => {
     },
   };
 
-  // --------------------------------
-  // Load from localStorage + backend
-  // --------------------------------
+  // -----------------------------
+  // Load from localStorage + API
+  // -----------------------------
   useEffect(() => {
     const loadSaved = async () => {
       try {
-        // 1) Local browser storage first (fast)
+        // LocalStorage first (fast, per-browser)
         if (typeof window !== 'undefined') {
           const lsTraining = window.localStorage.getItem(
             `spm_training_${selectedSport}`
@@ -92,7 +88,9 @@ const SportsPredictionModel = () => {
             }
           }
 
-          const lsModel = window.localStorage.getItem(`spm_model_${selectedSport}`);
+          const lsModel = window.localStorage.getItem(
+            `spm_model_${selectedSport}`
+          );
           if (lsModel) {
             const parsed = JSON.parse(lsModel);
             if (parsed.modelParams) {
@@ -105,10 +103,11 @@ const SportsPredictionModel = () => {
           }
         }
 
-        // 2) Then try backend (Render) to sync / override if available
+        // Then try backend to sync / override
         if (API_BASE) {
-          // Model
-          const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
+          const modelRes = await fetch(
+            `${API_BASE}/api/model?sport=${selectedSport}`
+          );
           if (modelRes.ok) {
             const data = await modelRes.json();
             if (data.modelParams) {
@@ -119,14 +118,8 @@ const SportsPredictionModel = () => {
               setModelTrained(false);
             }
             if (data.trainingStats) setTrainingStats(data.trainingStats);
-          } else {
-            // no backend model – keep whatever we had
-            if (!modelParams) {
-              setModelTrained(false);
-            }
           }
 
-          // Training data
           const tdRes = await fetch(
             `${API_BASE}/api/training-data?sport=${selectedSport}`
           );
@@ -147,17 +140,15 @@ const SportsPredictionModel = () => {
         setPrediction(null);
         setEvResult(null);
         setMatchupInputs({});
-      } catch (error) {
-        console.error('Error loading saved data', error);
+      } catch (err) {
+        console.error('Error loading saved data', err);
       }
     };
 
     loadSaved();
   }, [selectedSport, API_BASE]);
 
-  // --------------------------------
-  // Auto-save training data to localStorage
-  // --------------------------------
+  // autosave training data
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -170,9 +161,7 @@ const SportsPredictionModel = () => {
     }
   }, [trainingData, selectedSport]);
 
-  // --------------------------------
-  // Auto-save model + stats to localStorage
-  // --------------------------------
+  // autosave model
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -193,13 +182,13 @@ const SportsPredictionModel = () => {
   }, [modelParams, trainingStats, selectedSport]);
 
   // -------------------------
-  // Core Helpers
+  // Core helpers
   // -------------------------
   const sigmoid = (z) => 1 / (1 + Math.exp(-z));
 
   const moneylineToFairProb = (ml) => {
     const num = Number(ml);
-    if (Number.isNaN(num)) return 0.5;
+    if (!Number.isFinite(num)) return 0.5;
     if (num > 0) return 100 / (num + 100);
     const neg = Math.abs(num);
     return neg / (neg + 100);
@@ -207,13 +196,12 @@ const SportsPredictionModel = () => {
 
   const removeVig = (p1, p2) => {
     const total = p1 + p2;
-    if (total <= 1.0001) return { p1, p2 };
+    if (!Number.isFinite(total) || total <= 1.0001) return { p1, p2 };
     return { p1: p1 / total, p2: p2 / total };
   };
 
   const probToMoneyline = (prob) => {
-    if (prob <= 0) return 0;
-    if (prob >= 1) return 0;
+    if (!Number.isFinite(prob) || prob <= 0 || prob >= 1) return 0;
     if (prob >= 0.5) return Math.round(-(prob / (1 - prob)) * 100);
     return Math.round(((1 - prob) / prob) * 100);
   };
@@ -225,7 +213,7 @@ const SportsPredictionModel = () => {
   };
 
   // -------------------------
-  // Training Helpers
+  // Training helpers
   // -------------------------
   const trainLogisticRegression = (X, y, options = {}) => {
     const nSamples = X.length;
@@ -234,19 +222,34 @@ const SportsPredictionModel = () => {
     const epochs = options.epochs ?? 500;
     const lambda = options.lambda ?? 0.012;
 
-    // Normalization
-    const means = X[0].map(
-      (_, j) => X.reduce((sum, row) => sum + row[j], 0) / nSamples
-    );
+    // means
+    const means = X[0].map((_, j) => {
+      let sum = 0;
+      for (let i = 0; i < nSamples; i++) {
+        const v = Number.isFinite(X[i][j]) ? X[i][j] : 0;
+        sum += v;
+      }
+      return sum / nSamples;
+    });
+
+    // stds
     const stds = X[0].map((_, j) => {
-      const variance =
-        X.reduce((sum, row) => sum + Math.pow(row[j] - means[j], 2), 0) /
-        nSamples;
-      return Math.sqrt(variance) || 1;
+      let variance = 0;
+      for (let i = 0; i < nSamples; i++) {
+        const v = Number.isFinite(X[i][j]) ? X[i][j] : 0;
+        const diff = v - means[j];
+        variance += diff * diff;
+      }
+      variance /= nSamples;
+      const s = Math.sqrt(variance);
+      return s || 1;
     });
 
     const Xnorm = X.map((row) =>
-      row.map((val, j) => (val - means[j]) / stds[j])
+      row.map((val, j) => {
+        const v = Number.isFinite(val) ? val : 0;
+        return (v - means[j]) / stds[j];
+      })
     );
 
     let weights = Array(nFeatures).fill(0);
@@ -275,24 +278,33 @@ const SportsPredictionModel = () => {
       bias -= learningRate * gradB;
     }
 
-    // Accuracy + Calibration Bins
+    // predictions
     const preds = Xnorm.map((row) => {
       const z =
         bias + weights.reduce((sum, w, j) => sum + w * row[j], 0);
       return sigmoid(z);
     });
 
-    const correct = preds.filter(
-      (p, i) => (p >= 0.5 ? 1 : 0) === y[i]
-    ).length;
+    // accuracy
+    let correct = 0;
+    for (let i = 0; i < nSamples; i++) {
+      const p = preds[i];
+      if (!Number.isFinite(p)) continue;
+      const label = p >= 0.5 ? 1 : 0;
+      if (label === y[i]) correct++;
+    }
     const accuracy = correct / nSamples;
 
-    // Calibration (10 bins)
+    // robust calibration bins
     const bins = Array(10)
       .fill()
       .map(() => ({ pred: 0, actual: 0, count: 0 }));
+
     preds.forEach((p, i) => {
-      const bin = Math.min(Math.floor(p * 10), 9);
+      if (!Number.isFinite(p)) return;
+      let bin = Math.floor(p * 10); // 0..10
+      if (bin < 0) bin = 0;
+      if (bin > 9) bin = 9;
       bins[bin].pred += p;
       bins[bin].actual += y[i];
       bins[bin].count += 1;
@@ -309,8 +321,9 @@ const SportsPredictionModel = () => {
     };
   };
 
+  // recompute last-5 columns ourselves, ignore CSV last5 strings
   const addLast5WinColumns = (rows) => {
-    const history = {};
+    const history = {}; // team -> [1/0,...]
     return rows.map((row) => {
       const team1 = row.team1;
       const team2 = row.team2;
@@ -338,16 +351,14 @@ const SportsPredictionModel = () => {
 
       return {
         ...row,
-        team1_last5:
-          row.team1_last5 !== undefined ? Number(row.team1_last5) : t1Rate,
-        team2_last5:
-          row.team2_last5 !== undefined ? Number(row.team2_last5) : t2Rate,
+        team1_last5: t1Rate,
+        team2_last5: t2Rate,
       };
     });
   };
 
   // -------------------------
-  // CSV + Backend Helpers
+  // CSV + backend helpers
   // -------------------------
   const parseCSV = (text) => {
     const lines = text
@@ -361,16 +372,15 @@ const SportsPredictionModel = () => {
       const parts = line.split(',');
       const obj = {};
       header.forEach((key, idx) => {
-        let val = parts[idx]?.trim();
-        if (val === undefined || val === '') {
+        const raw = (parts[idx] ?? '').trim();
+        if (raw === '') {
           obj[key] = '';
-        } else if (!Number.isNaN(Number(val)) && val !== '') {
-          obj[key] = Number(val);
+        } else if (!Number.isNaN(Number(raw))) {
+          obj[key] = Number(raw);
         } else {
-          obj[key] = val;
+          obj[key] = raw;
         }
       });
-      // Normalize winner to 0/1 if present
       if (obj.winner !== undefined) {
         const w = Number(obj.winner);
         obj.winner = w === 1 ? 1 : w === 0 ? 0 : obj.winner;
@@ -379,7 +389,6 @@ const SportsPredictionModel = () => {
     });
   };
 
-  // ✅ Upload with append/replace option
   const handleDataUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -402,7 +411,6 @@ const SportsPredictionModel = () => {
       setPrediction(null);
       setEvResult(null);
 
-      // Best effort save to backend
       try {
         await fetch(`${API_BASE}/api/training-data`, {
           method: 'POST',
@@ -477,7 +485,9 @@ const SportsPredictionModel = () => {
         alert('No saved training data found on server');
       }
 
-      const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
+      const modelRes = await fetch(
+        `${API_BASE}/api/model?sport=${selectedSport}`
+      );
       if (modelRes.ok) {
         const data = await modelRes.json();
         if (data.modelParams) {
@@ -511,7 +521,6 @@ const SportsPredictionModel = () => {
     setActualML2('');
     setFileName('');
 
-    // Clear browser storage
     try {
       if (typeof window !== 'undefined') {
         window.localStorage.removeItem(`spm_training_${selectedSport}`);
@@ -521,7 +530,6 @@ const SportsPredictionModel = () => {
       console.warn('Failed to clear localStorage', e);
     }
 
-    // Best-effort clear backend
     try {
       await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`, {
         method: 'DELETE',
@@ -595,7 +603,7 @@ const SportsPredictionModel = () => {
   };
 
   // -------------------------
-  // Training (safer trainModel)
+  // Training
   // -------------------------
   const trainModel = async () => {
     if (trainingData.length < 20) {
@@ -617,15 +625,19 @@ const SportsPredictionModel = () => {
       return;
     }
 
+    // robust feature matrix
     const X = usable.map((row) =>
       features.map((f) => {
         if (f.includes('moneyline')) {
           const p1 = moneylineToFairProb(row.team1_moneyline);
           const p2 = moneylineToFairProb(row.team2_moneyline);
           const { p1: fair1, p2: fair2 } = removeVig(p1, p2);
-          return f === 'team1_moneyline' ? fair1 : fair2;
+          const val = f === 'team1_moneyline' ? fair1 : fair2;
+          return Number.isFinite(val) ? val : 0.5;
         }
-        return Number(row[f] ?? 0);
+        const raw = row[f];
+        const num = Number(raw);
+        return Number.isFinite(num) ? num : 0;
       })
     );
 
@@ -638,7 +650,6 @@ const SportsPredictionModel = () => {
     let importance;
     let calib;
 
-    // 1) Actual training — if this fails, we *really* fail.
     try {
       const result = trainLogisticRegression(X, y, {
         learningRate: 0.12,
@@ -689,7 +700,7 @@ const SportsPredictionModel = () => {
       return;
     }
 
-    // 2) Best-effort save to backend — no alert on failure
+    // best-effort save to backend
     try {
       await fetch(`${API_BASE}/api/model`, {
         method: 'POST',
@@ -717,7 +728,7 @@ const SportsPredictionModel = () => {
     const payout1 = ml1 > 0 ? ml1 / 100 + 1 : 1 + 100 / Math.abs(ml1);
     const payout2 = ml2 > 0 ? ml2 / 100 + 1 : 1 + 100 / Math.abs(ml2);
 
-    const ev1 = (fair1 * payout1 - (1 - fair1)) * 100; // per $100
+    const ev1 = (fair1 * payout1 - (1 - fair1)) * 100;
     const ev2 = (fair2 * payout2 - (1 - fair2)) * 100;
 
     const bestEV = Math.max(ev1, ev2);
@@ -769,9 +780,8 @@ const SportsPredictionModel = () => {
     const raw = features.map((f) => {
       if (f === 'team1_moneyline' && team1Fair !== null) return team1Fair;
       if (f === 'team2_moneyline' && team2Fair !== null) return team2Fair;
-
       const val = parseFloat(matchupInputs[f]);
-      return Number.isNaN(val) ? 0 : val;
+      return Number.isFinite(val) ? val : 0;
     });
 
     const xNorm = raw.map((v, j) => (v - means[j]) / stds[j]);
@@ -828,7 +838,7 @@ const SportsPredictionModel = () => {
   };
 
   // -------------------------
-  // JSX (UI)
+  // JSX
   // -------------------------
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
@@ -849,7 +859,7 @@ const SportsPredictionModel = () => {
           </div>
 
           <div className="p-6 md:p-10 space-y-10">
-            {/* Sport Selection */}
+            {/* Sport tabs */}
             <div className="grid grid-cols-3 md:grid-cols-5 gap-4">
               {Object.entries(sports).map(([key, s]) => (
                 <button
@@ -866,14 +876,13 @@ const SportsPredictionModel = () => {
               ))}
             </div>
 
-            {/* Training Section */}
+            {/* Training section */}
             <div className="grid lg:grid-cols-2 gap-8">
               <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
                 <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
                   <Database className="text-blue-400" /> Training Data
                 </h2>
 
-                {/* Append toggle */}
                 <div className="mb-4">
                   <label className="flex items-center gap-3 text-white cursor-pointer">
                     <input
@@ -888,7 +897,6 @@ const SportsPredictionModel = () => {
                   </label>
                 </div>
 
-                {/* Upload UI */}
                 <label className="block cursor-pointer">
                   <div className="border-2 border-dashed border-white/30 rounded-2xl p-10 text-center hover:border-blue-400 transition-all">
                     <Upload className="w-16 h-16 text-blue-400 mx-auto mb-4" />
@@ -954,7 +962,7 @@ const SportsPredictionModel = () => {
                 )}
               </div>
 
-              {/* Right Column: Template + Actions */}
+              {/* Quick actions */}
               <div className="space-y-6">
                 <div className="bg-white/5 rounded-2xl p-6 border border-white/10">
                   <h3 className="text-xl font-bold text-white mb-4">
@@ -998,7 +1006,7 @@ const SportsPredictionModel = () => {
               </div>
             </div>
 
-            {/* Prediction + EV Section */}
+            {/* Prediction section */}
             {modelTrained && (
               <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
                 <h2 className="text-3xl font-bold text-white mb-8 flex items-center gap-4">
