@@ -26,7 +26,7 @@ const SportsPredictionModel = () => {
   const [trainingStats, setTrainingStats] = useState(null);
   const [featureImportance, setFeatureImportance] = useState(null);
   const [calibration, setCalibration] = useState(null);
-  const [appendMode, setAppendMode] = useState(false); // ✅ NEW
+  const [appendMode, setAppendMode] = useState(false); // ✅ append / replace toggle
 
   const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
 
@@ -73,34 +73,75 @@ const SportsPredictionModel = () => {
     },
   };
 
+  // --------------------------------
+  // Load from localStorage + backend
+  // --------------------------------
   useEffect(() => {
     const loadSaved = async () => {
       try {
-        // Load model
-        const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
-        if (modelRes.ok) {
-          const data = await modelRes.json();
-          if (data.modelParams) {
-            setModelParams(data.modelParams);
-            setModelTrained(true);
-          } else {
-            setModelParams(null);
-            setModelTrained(false);
+        // 1) Local browser storage first (fast)
+        if (typeof window !== 'undefined') {
+          const lsTraining = window.localStorage.getItem(
+            `spm_training_${selectedSport}`
+          );
+          if (lsTraining) {
+            const rows = JSON.parse(lsTraining);
+            if (Array.isArray(rows)) {
+              setTrainingData(rows);
+              setFileName('(loaded from this browser)');
+            }
           }
-          if (data.trainingStats) setTrainingStats(data.trainingStats);
-        } else {
-          setModelParams(null);
-          setModelTrained(false);
+
+          const lsModel = window.localStorage.getItem(`spm_model_${selectedSport}`);
+          if (lsModel) {
+            const parsed = JSON.parse(lsModel);
+            if (parsed.modelParams) {
+              setModelParams(parsed.modelParams);
+              setModelTrained(true);
+            }
+            if (parsed.trainingStats) {
+              setTrainingStats(parsed.trainingStats);
+            }
+          }
         }
 
-        // Load training data
-        const tdRes = await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`);
-        if (tdRes.ok) {
-          const tdData = await tdRes.json();
-          if (Array.isArray(tdData.rows)) setTrainingData(tdData.rows);
-          else if (Array.isArray(tdData)) setTrainingData(tdData);
-        } else {
-          setTrainingData([]);
+        // 2) Then try backend (Render) to sync / override if available
+        if (API_BASE) {
+          // Model
+          const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
+          if (modelRes.ok) {
+            const data = await modelRes.json();
+            if (data.modelParams) {
+              setModelParams(data.modelParams);
+              setModelTrained(true);
+            } else {
+              setModelParams(null);
+              setModelTrained(false);
+            }
+            if (data.trainingStats) setTrainingStats(data.trainingStats);
+          } else {
+            // no backend model – keep whatever we had
+            if (!modelParams) {
+              setModelTrained(false);
+            }
+          }
+
+          // Training data
+          const tdRes = await fetch(
+            `${API_BASE}/api/training-data?sport=${selectedSport}`
+          );
+          if (tdRes.ok) {
+            const tdData = await tdRes.json();
+            const rows = Array.isArray(tdData.rows)
+              ? tdData.rows
+              : Array.isArray(tdData)
+              ? tdData
+              : [];
+            if (rows.length) {
+              setTrainingData(rows);
+              setFileName('(loaded from server)');
+            }
+          }
         }
 
         setPrediction(null);
@@ -110,8 +151,46 @@ const SportsPredictionModel = () => {
         console.error('Error loading saved data', error);
       }
     };
+
     loadSaved();
   }, [selectedSport, API_BASE]);
+
+  // --------------------------------
+  // Auto-save training data to localStorage
+  // --------------------------------
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        `spm_training_${selectedSport}`,
+        JSON.stringify(trainingData || [])
+      );
+    } catch (e) {
+      console.warn('Failed to save training data to localStorage', e);
+    }
+  }, [trainingData, selectedSport]);
+
+  // --------------------------------
+  // Auto-save model + stats to localStorage
+  // --------------------------------
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (modelParams) {
+        window.localStorage.setItem(
+          `spm_model_${selectedSport}`,
+          JSON.stringify({
+            modelParams,
+            trainingStats,
+          })
+        );
+      } else {
+        window.localStorage.removeItem(`spm_model_${selectedSport}`);
+      }
+    } catch (e) {
+      console.warn('Failed to save model to localStorage', e);
+    }
+  }, [modelParams, trainingStats, selectedSport]);
 
   // -------------------------
   // Core Helpers
@@ -300,7 +379,7 @@ const SportsPredictionModel = () => {
     });
   };
 
-  // ✅ UPDATED: handleDataUpload with append/replace toggle
+  // ✅ Upload with append/replace option
   const handleDataUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -314,10 +393,7 @@ const SportsPredictionModel = () => {
         rows = addLast5WinColumns(rows);
       }
 
-      // ✅ APPEND or REPLACE
-      const finalRows = appendMode
-        ? [...trainingData, ...rows] // Combine old + new
-        : rows; // Replace
+      const finalRows = appendMode ? [...trainingData, ...rows] : rows;
 
       setTrainingData(finalRows);
       setTrainingStats(null);
@@ -326,14 +402,14 @@ const SportsPredictionModel = () => {
       setPrediction(null);
       setEvResult(null);
 
-      // Save to backend
+      // Best effort save to backend
       try {
         await fetch(`${API_BASE}/api/training-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sport: selectedSport,
-            rows: finalRows, // ✅ Send combined data
+            rows: finalRows,
             append: appendMode,
           }),
         });
@@ -350,7 +426,6 @@ const SportsPredictionModel = () => {
       console.error('Upload failed', err);
       alert('Failed to read CSV');
     } finally {
-      // Reset file input so re-uploading same file works
       e.target.value = '';
     }
   };
@@ -385,7 +460,9 @@ const SportsPredictionModel = () => {
 
   const importSavedData = async () => {
     try {
-      const tdRes = await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`);
+      const tdRes = await fetch(
+        `${API_BASE}/api/training-data?sport=${selectedSport}`
+      );
       if (tdRes.ok) {
         const tdData = await tdRes.json();
         const rows = Array.isArray(tdData.rows)
@@ -434,6 +511,17 @@ const SportsPredictionModel = () => {
     setActualML2('');
     setFileName('');
 
+    // Clear browser storage
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(`spm_training_${selectedSport}`);
+        window.localStorage.removeItem(`spm_model_${selectedSport}`);
+      }
+    } catch (e) {
+      console.warn('Failed to clear localStorage', e);
+    }
+
+    // Best-effort clear backend
     try {
       await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`, {
         method: 'DELETE',
@@ -452,7 +540,6 @@ const SportsPredictionModel = () => {
 
     if (sportDef.isTeamSeasonSport) {
       baseCols = ['team1', 'team2', 'team1_moneyline', 'team2_moneyline', 'winner'];
-      // last5 gets auto-filled, but expose for power users
       if (sportDef.features.includes('team1_last5')) {
         baseCols.push('team1_last5', 'team2_last5');
       }
@@ -467,7 +554,7 @@ const SportsPredictionModel = () => {
         'player2_form',
         'head_to_head',
         'fatigue_factor',
-        'winner', // 1 = player1, 0 = player2
+        'winner',
       ];
     } else if (selectedSport === 'table_tennis') {
       baseCols = [
@@ -508,112 +595,117 @@ const SportsPredictionModel = () => {
   };
 
   // -------------------------
-  // Training
+  // Training (safer trainModel)
   // -------------------------
   const trainModel = async () => {
-  if (trainingData.length < 20) {
-    alert('Need at least 20 games');
-    return;
-  }
+    if (trainingData.length < 20) {
+      alert('Need at least 20 games');
+      return;
+    }
 
-  const { features } = sports[selectedSport];
-  const usable = trainingData.filter(
-    (r) =>
-      r.winner === 0 ||
-      r.winner === 1 ||
-      r.winner === '0' ||
-      r.winner === '1'
-  );
-
-  if (!usable.length) {
-    alert('No rows with winner = 0 or 1');
-    return;
-  }
-
-  const X = usable.map((row) =>
-    features.map((f) => {
-      if (f.includes('moneyline')) {
-        const p1 = moneylineToFairProb(row.team1_moneyline);
-        const p2 = moneylineToFairProb(row.team2_moneyline);
-        const { p1: fair1, p2: fair2 } = removeVig(p1, p2);
-        return f === 'team1_moneyline' ? fair1 : fair2;
-      }
-      return Number(row[f] ?? 0);
-    })
-  );
-
-  const y = usable.map((r) => Number(r.winner));
-
-  setIsTraining(true);
-
-  let model;
-  let stats;
-  let importance;
-  let calib;
-
-  // 👉 1) Do the actual training. If THIS fails, we truly fail.
-  try {
-    const result = trainLogisticRegression(X, y, {
-      learningRate: 0.12,
-      epochs: 500,
-      lambda: 0.012,
-    });
-
-    const { weights, bias, means, stds, accuracy, samplesUsed, calibration: c } =
-      result;
-
-    model = { weights, bias, means, stds, features };
-    stats = {
-      accuracy: (accuracy * 100).toFixed(1),
-      samplesUsed,
-    };
-    calib = c;
-
-    importance = features
-      .map((f, i) => ({ feature: f, weight: Math.abs(weights[i]) }))
-      .sort((a, b) => b.weight - a.weight);
-
-    // Update UI state
-    setModelParams(model);
-    setModelTrained(true);
-    setTrainingStats(stats);
-    setCalibration(calib);
-    setFeatureImportance(importance);
-
-    alert(
-      `PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(
-        1
-      )}% accuracy`
+    const { features } = sports[selectedSport];
+    const usable = trainingData.filter(
+      (r) =>
+        r.winner === 0 ||
+        r.winner === 1 ||
+        r.winner === '0' ||
+        r.winner === '1'
     );
-  } catch (err) {
-    console.error('Training error', err);
-    alert(
-      `Training failed: ${
-        err?.message || 'unexpected error during optimization'
-      }`
+
+    if (!usable.length) {
+      alert('No rows with winner = 0 or 1');
+      return;
+    }
+
+    const X = usable.map((row) =>
+      features.map((f) => {
+        if (f.includes('moneyline')) {
+          const p1 = moneylineToFairProb(row.team1_moneyline);
+          const p2 = moneylineToFairProb(row.team2_moneyline);
+          const { p1: fair1, p2: fair2 } = removeVig(p1, p2);
+          return f === 'team1_moneyline' ? fair1 : fair2;
+        }
+        return Number(row[f] ?? 0);
+      })
     );
-    setIsTraining(false);
-    return;
-  }
 
-  // 👉 2) Try to save to backend, but DO NOT treat failure as a training failure
-  try {
-    await fetch(`${API_BASE}/api/model`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sport: selectedSport,
-        modelParams: model,
-        trainingStats: stats,
-      }),
-    });
-  } catch (err) {
-    console.warn('Failed to save model to backend (training still OK):', err);
-  } finally {
-    setIsTraining(false);
-  }
-};
+    const y = usable.map((r) => Number(r.winner));
 
+    setIsTraining(true);
+
+    let model;
+    let stats;
+    let importance;
+    let calib;
+
+    // 1) Actual training — if this fails, we *really* fail.
+    try {
+      const result = trainLogisticRegression(X, y, {
+        learningRate: 0.12,
+        epochs: 500,
+        lambda: 0.012,
+      });
+
+      const {
+        weights,
+        bias,
+        means,
+        stds,
+        accuracy,
+        samplesUsed,
+        calibration: c,
+      } = result;
+
+      model = { weights, bias, means, stds, features };
+      stats = {
+        accuracy: (accuracy * 100).toFixed(1),
+        samplesUsed,
+      };
+      calib = c;
+
+      importance = features
+        .map((f, i) => ({ feature: f, weight: Math.abs(weights[i]) }))
+        .sort((a, b) => b.weight - a.weight);
+
+      setModelParams(model);
+      setModelTrained(true);
+      setTrainingStats(stats);
+      setCalibration(calib);
+      setFeatureImportance(importance);
+
+      alert(
+        `PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(
+          1
+        )}% accuracy`
+      );
+    } catch (err) {
+      console.error('Training error', err);
+      alert(
+        `Training failed: ${
+          err?.message || 'unexpected error during optimization'
+        }`
+      );
+      setIsTraining(false);
+      return;
+    }
+
+    // 2) Best-effort save to backend — no alert on failure
+    try {
+      await fetch(`${API_BASE}/api/model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sport: selectedSport,
+          modelParams: model,
+          trainingStats: stats,
+        }),
+      });
+    } catch (err) {
+      console.warn('Failed to save model to backend (training still OK):', err);
+    } finally {
+      setIsTraining(false);
+    }
+  };
 
   // -------------------------
   // Prediction + EV
@@ -698,7 +790,6 @@ const SportsPredictionModel = () => {
       confidence: (Math.abs(p - 0.5) * 200).toFixed(1),
     });
 
-    // Auto EV calc if actual lines entered
     if (actualML1 && actualML2) {
       const ml1 = parseFloat(actualML1);
       const ml2 = parseFloat(actualML2);
@@ -721,9 +812,7 @@ const SportsPredictionModel = () => {
         .slice(0, 5)
         .map(
           (f, i) =>
-            `${i + 1}. ${f.feature.replace(/_/g, ' ')} → ${f.weight.toFixed(
-              3
-            )}`
+            `${i + 1}. ${f.feature.replace(/_/g, ' ')} → ${f.weight.toFixed(3)}`
         ),
       '',
       'Model is ready for live betting (simulation / educational use only).',
@@ -739,7 +828,7 @@ const SportsPredictionModel = () => {
   };
 
   // -------------------------
-  // JSX (Pro UI)
+  // JSX (UI)
   // -------------------------
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
