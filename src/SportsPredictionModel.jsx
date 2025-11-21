@@ -69,70 +69,67 @@ const SportsPredictionModel = () => {
     },
   };
 
-  // -----------------------------
-  // Load from localStorage + API
-  // -----------------------------
+  // ✅ FIXED: Load backend first, localStorage as fallback
   useEffect(() => {
     const loadSaved = async () => {
       try {
-        // LocalStorage first (fast, per-browser)
-        if (typeof window !== 'undefined') {
-          const lsTraining = window.localStorage.getItem(
-            `spm_training_${selectedSport}`
-          );
-          if (lsTraining) {
-            const rows = JSON.parse(lsTraining);
-            if (Array.isArray(rows)) {
-              setTrainingData(rows);
-              setFileName('(loaded from this browser)');
-            }
-          }
+        let loadedFromBackend = false;
 
-          const lsModel = window.localStorage.getItem(
-            `spm_model_${selectedSport}`
-          );
-          if (lsModel) {
-            const parsed = JSON.parse(lsModel);
-            if (parsed.modelParams) {
-              setModelParams(parsed.modelParams);
-              setModelTrained(true);
+        // Try backend FIRST
+        if (API_BASE) {
+          try {
+            const tdRes = await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`);
+            if (tdRes.ok) {
+              const tdData = await tdRes.json();
+              const rows = Array.isArray(tdData.rows) ? tdData.rows : Array.isArray(tdData) ? tdData : [];
+              if (rows.length) {
+                setTrainingData(rows);
+                setFileName('(loaded from server)');
+                loadedFromBackend = true;
+              }
             }
-            if (parsed.trainingStats) {
-              setTrainingStats(parsed.trainingStats);
+
+            const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
+            if (modelRes.ok) {
+              const data = await modelRes.json();
+              if (data.modelParams) {
+                setModelParams(data.modelParams);
+                setModelTrained(true);
+                loadedFromBackend = true;
+              }
+              if (data.trainingStats) setTrainingStats(data.trainingStats);
             }
+          } catch (err) {
+            console.warn('Backend unavailable, falling back to localStorage', err);
           }
         }
 
-        // Then try backend to sync / override
-        if (API_BASE) {
-          const modelRes = await fetch(
-            `${API_BASE}/api/model?sport=${selectedSport}`
-          );
-          if (modelRes.ok) {
-            const data = await modelRes.json();
-            if (data.modelParams) {
-              setModelParams(data.modelParams);
-              setModelTrained(true);
-            } else {
-              setModelParams(null);
-              setModelTrained(false);
+        // Fall back to localStorage if backend failed or empty
+        if (!loadedFromBackend && typeof window !== 'undefined') {
+          const lsTraining = window.localStorage.getItem(`spm_training_${selectedSport}`);
+          if (lsTraining) {
+            try {
+              const rows = JSON.parse(lsTraining);
+              if (Array.isArray(rows) && rows.length) {
+                setTrainingData(rows);
+                setFileName('(loaded from browser)');
+              }
+            } catch (e) {
+              console.warn('Failed to parse localStorage training data', e);
             }
-            if (data.trainingStats) setTrainingStats(data.trainingStats);
           }
 
-          const tdRes = await fetch(
-            `${API_BASE}/api/training-data?sport=${selectedSport}`
-          );
-          if (tdRes.ok) {
-            const tdData = await tdRes.json();
-            const rows = Array.isArray(tdData.rows)
-              ? tdData.rows
-              : Array.isArray(tdData)
-              ? tdData
-              : [];
-            if (rows.length) {
-              setTrainingData(rows);
-              setFileName('(loaded from server)');
+          const lsModel = window.localStorage.getItem(`spm_model_${selectedSport}`);
+          if (lsModel) {
+            try {
+              const parsed = JSON.parse(lsModel);
+              if (parsed.modelParams) {
+                setModelParams(parsed.modelParams);
+                setModelTrained(true);
+              }
+              if (parsed.trainingStats) setTrainingStats(parsed.trainingStats);
+            } catch (e) {
+              console.warn('Failed to parse localStorage model', e);
             }
           }
         }
@@ -140,6 +137,7 @@ const SportsPredictionModel = () => {
         setPrediction(null);
         setEvResult(null);
         setMatchupInputs({});
+        setAppendMode(false);
       } catch (err) {
         console.error('Error loading saved data', err);
       }
@@ -148,7 +146,7 @@ const SportsPredictionModel = () => {
     loadSaved();
   }, [selectedSport, API_BASE]);
 
-  // autosave training data
+  // Auto-save to localStorage
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -161,17 +159,13 @@ const SportsPredictionModel = () => {
     }
   }, [trainingData, selectedSport]);
 
-  // autosave model
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
       if (modelParams) {
         window.localStorage.setItem(
           `spm_model_${selectedSport}`,
-          JSON.stringify({
-            modelParams,
-            trainingStats,
-          })
+          JSON.stringify({ modelParams, trainingStats })
         );
       } else {
         window.localStorage.removeItem(`spm_model_${selectedSport}`);
@@ -181,9 +175,6 @@ const SportsPredictionModel = () => {
     }
   }, [modelParams, trainingStats, selectedSport]);
 
-  // -------------------------
-  // Core helpers
-  // -------------------------
   const sigmoid = (z) => 1 / (1 + Math.exp(-z));
 
   const moneylineToFairProb = (ml) => {
@@ -212,9 +203,6 @@ const SportsPredictionModel = () => {
     return m > 0 ? `+${m}` : m.toString();
   };
 
-  // -------------------------
-  // Training helpers
-  // -------------------------
   const trainLogisticRegression = (X, y, options = {}) => {
     const nSamples = X.length;
     const nFeatures = X[0].length;
@@ -222,7 +210,6 @@ const SportsPredictionModel = () => {
     const epochs = options.epochs ?? 500;
     const lambda = options.lambda ?? 0.012;
 
-    // means
     const means = X[0].map((_, j) => {
       let sum = 0;
       for (let i = 0; i < nSamples; i++) {
@@ -232,7 +219,6 @@ const SportsPredictionModel = () => {
       return sum / nSamples;
     });
 
-    // stds
     const stds = X[0].map((_, j) => {
       let variance = 0;
       for (let i = 0; i < nSamples; i++) {
@@ -260,9 +246,7 @@ const SportsPredictionModel = () => {
       let gradB = 0;
 
       for (let i = 0; i < nSamples; i++) {
-        const z =
-          bias +
-          weights.reduce((sum, w, j) => sum + w * Xnorm[i][j], 0);
+        const z = bias + weights.reduce((sum, w, j) => sum + w * Xnorm[i][j], 0);
         const p = sigmoid(z);
         const error = p - y[i];
         gradW = gradW.map((g, j) => g + error * Xnorm[i][j]);
@@ -272,20 +256,15 @@ const SportsPredictionModel = () => {
       gradW = gradW.map((g) => g / nSamples);
       gradB /= nSamples;
 
-      weights = weights.map(
-        (w, j) => w - learningRate * (gradW[j] + lambda * w)
-      );
+      weights = weights.map((w, j) => w - learningRate * (gradW[j] + lambda * w));
       bias -= learningRate * gradB;
     }
 
-    // predictions
     const preds = Xnorm.map((row) => {
-      const z =
-        bias + weights.reduce((sum, w, j) => sum + w * row[j], 0);
+      const z = bias + weights.reduce((sum, w, j) => sum + w * row[j], 0);
       return sigmoid(z);
     });
 
-    // accuracy
     let correct = 0;
     for (let i = 0; i < nSamples; i++) {
       const p = preds[i];
@@ -295,14 +274,10 @@ const SportsPredictionModel = () => {
     }
     const accuracy = correct / nSamples;
 
-    // robust calibration bins
-    const bins = Array(10)
-      .fill()
-      .map(() => ({ pred: 0, actual: 0, count: 0 }));
-
+    const bins = Array(10).fill().map(() => ({ pred: 0, actual: 0, count: 0 }));
     preds.forEach((p, i) => {
       if (!Number.isFinite(p)) return;
-      let bin = Math.floor(p * 10); // 0..10
+      let bin = Math.floor(p * 10);
       if (bin < 0) bin = 0;
       if (bin > 9) bin = 9;
       bins[bin].pred += p;
@@ -321,9 +296,8 @@ const SportsPredictionModel = () => {
     };
   };
 
-  // recompute last-5 columns ourselves, ignore CSV last5 strings
   const addLast5WinColumns = (rows) => {
-    const history = {}; // team -> [1/0,...]
+    const history = {};
     return rows.map((row) => {
       const team1 = row.team1;
       const team2 = row.team2;
@@ -333,14 +307,8 @@ const SportsPredictionModel = () => {
       const t1Last5 = t1Hist.slice(-5);
       const t2Last5 = t2Hist.slice(-5);
 
-      const t1Rate =
-        t1Last5.length > 0
-          ? t1Last5.reduce((a, b) => a + b, 0) / t1Last5.length
-          : 0.5;
-      const t2Rate =
-        t2Last5.length > 0
-          ? t2Last5.reduce((a, b) => a + b, 0) / t2Last5.length
-          : 0.5;
+      const t1Rate = t1Last5.length > 0 ? t1Last5.reduce((a, b) => a + b, 0) / t1Last5.length : 0.5;
+      const t2Rate = t2Last5.length > 0 ? t2Last5.reduce((a, b) => a + b, 0) / t2Last5.length : 0.5;
 
       const winner = Number(row.winner);
       const t1Result = winner === 1 ? 1 : 0;
@@ -357,9 +325,6 @@ const SportsPredictionModel = () => {
     });
   };
 
-  // -------------------------
-  // CSV + backend helpers
-  // -------------------------
   const parseCSV = (text) => {
     const lines = text
       .split(/\r?\n/)
@@ -389,6 +354,7 @@ const SportsPredictionModel = () => {
     });
   };
 
+  // ✅ FIXED: Properly handle append mode with last-5 recalculation
   const handleDataUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -396,13 +362,23 @@ const SportsPredictionModel = () => {
 
     try {
       const text = await file.text();
-      let rows = parseCSV(text);
+      let newRows = parseCSV(text);
+
+      let finalRows;
 
       if (sports[selectedSport].isTeamSeasonSport) {
-        rows = addLast5WinColumns(rows);
+        if (appendMode && trainingData.length > 0) {
+          // ✅ CRITICAL FIX: Combine first, THEN calculate last-5 on full dataset
+          const combined = [...trainingData, ...newRows];
+          finalRows = addLast5WinColumns(combined);
+        } else {
+          // First upload or replace mode
+          finalRows = addLast5WinColumns(newRows);
+        }
+      } else {
+        // Non-team sports (tennis, table tennis)
+        finalRows = appendMode ? [...trainingData, ...newRows] : newRows;
       }
-
-      const finalRows = appendMode ? [...trainingData, ...rows] : rows;
 
       setTrainingData(finalRows);
       setTrainingStats(null);
@@ -418,7 +394,6 @@ const SportsPredictionModel = () => {
           body: JSON.stringify({
             sport: selectedSport,
             rows: finalRows,
-            append: appendMode,
           }),
         });
       } catch (err) {
@@ -427,8 +402,8 @@ const SportsPredictionModel = () => {
 
       alert(
         appendMode
-          ? `Added ${rows.length} games (Total: ${finalRows.length})`
-          : `Loaded ${rows.length} games for ${sports[selectedSport].name}`
+          ? `✅ Added ${newRows.length} games (Total: ${finalRows.length})`
+          : `✅ Loaded ${finalRows.length} games`
       );
     } catch (err) {
       console.error('Upload failed', err);
@@ -443,9 +418,7 @@ const SportsPredictionModel = () => {
       alert('No training data to export');
       return;
     }
-    const keys = Array.from(
-      new Set(trainingData.flatMap((row) => Object.keys(row)))
-    );
+    const keys = Array.from(new Set(trainingData.flatMap((row) => Object.keys(row))));
     const header = keys.join(',');
     const rows = trainingData.map((row) =>
       keys
@@ -468,16 +441,10 @@ const SportsPredictionModel = () => {
 
   const importSavedData = async () => {
     try {
-      const tdRes = await fetch(
-        `${API_BASE}/api/training-data?sport=${selectedSport}`
-      );
+      const tdRes = await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`);
       if (tdRes.ok) {
         const tdData = await tdRes.json();
-        const rows = Array.isArray(tdData.rows)
-          ? tdData.rows
-          : Array.isArray(tdData)
-          ? tdData
-          : [];
+        const rows = Array.isArray(tdData.rows) ? tdData.rows : Array.isArray(tdData) ? tdData : [];
         setTrainingData(rows);
         setFileName('(loaded from server)');
         alert(`Loaded ${rows.length} games from server`);
@@ -485,9 +452,7 @@ const SportsPredictionModel = () => {
         alert('No saved training data found on server');
       }
 
-      const modelRes = await fetch(
-        `${API_BASE}/api/model?sport=${selectedSport}`
-      );
+      const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
       if (modelRes.ok) {
         const data = await modelRes.json();
         if (data.modelParams) {
@@ -506,8 +471,7 @@ const SportsPredictionModel = () => {
   };
 
   const clearSportData = async () => {
-    if (!window.confirm(`Clear all data for ${sports[selectedSport].name}?`))
-      return;
+    if (!window.confirm(`Clear all data for ${sports[selectedSport].name}?`)) return;
 
     setTrainingData([]);
     setModelParams(null);
@@ -548,9 +512,6 @@ const SportsPredictionModel = () => {
 
     if (sportDef.isTeamSeasonSport) {
       baseCols = ['team1', 'team2', 'team1_moneyline', 'team2_moneyline', 'winner'];
-      if (sportDef.features.includes('team1_last5')) {
-        baseCols.push('team1_last5', 'team2_last5');
-      }
     } else if (selectedSport === 'tennis') {
       baseCols = [
         'player1',
@@ -586,8 +547,8 @@ const SportsPredictionModel = () => {
         if (c.includes('form')) return '0.6';
         if (c === 'surface') return 'hard';
         if (c === 'tournament_level') return '250';
-        if (c === 'team1' || c === 'player1') return 'Team/Player A';
-        if (c === 'team2' || c === 'player2') return 'Team/Player B';
+        if (c === 'team1' || c === 'player1') return 'TeamA';
+        if (c === 'team2' || c === 'player2') return 'TeamB';
         return '';
       })
       .join(',');
@@ -602,9 +563,6 @@ const SportsPredictionModel = () => {
     URL.revokeObjectURL(url);
   };
 
-  // -------------------------
-  // Training
-  // -------------------------
   const trainModel = async () => {
     if (trainingData.length < 20) {
       alert('Need at least 20 games');
@@ -613,11 +571,7 @@ const SportsPredictionModel = () => {
 
     const { features } = sports[selectedSport];
     const usable = trainingData.filter(
-      (r) =>
-        r.winner === 0 ||
-        r.winner === 1 ||
-        r.winner === '0' ||
-        r.winner === '1'
+      (r) => r.winner === 0 || r.winner === 1 || r.winner === '0' || r.winner === '1'
     );
 
     if (!usable.length) {
@@ -625,7 +579,6 @@ const SportsPredictionModel = () => {
       return;
     }
 
-    // robust feature matrix
     const X = usable.map((row) =>
       features.map((f) => {
         if (f.includes('moneyline')) {
@@ -657,15 +610,7 @@ const SportsPredictionModel = () => {
         lambda: 0.012,
       });
 
-      const {
-        weights,
-        bias,
-        means,
-        stds,
-        accuracy,
-        samplesUsed,
-        calibration: c,
-      } = result;
+      const { weights, bias, means, stds, accuracy, samplesUsed, calibration: c } = result;
 
       model = { weights, bias, means, stds, features };
       stats = {
@@ -684,23 +629,14 @@ const SportsPredictionModel = () => {
       setCalibration(calib);
       setFeatureImportance(importance);
 
-      alert(
-        `PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(
-          1
-        )}% accuracy`
-      );
+      alert(`PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(1)}% accuracy`);
     } catch (err) {
       console.error('Training error', err);
-      alert(
-        `Training failed: ${
-          err?.message || 'unexpected error during optimization'
-        }`
-      );
+      alert(`Training failed: ${err?.message || 'unexpected error'}`);
       setIsTraining(false);
       return;
     }
 
-    // best-effort save to backend
     try {
       await fetch(`${API_BASE}/api/model`, {
         method: 'POST',
@@ -712,15 +648,12 @@ const SportsPredictionModel = () => {
         }),
       });
     } catch (err) {
-      console.warn('Failed to save model to backend (training still OK):', err);
+      console.warn('Failed to save model to backend:', err);
     } finally {
       setIsTraining(false);
     }
   };
 
-  // -------------------------
-  // Prediction + EV
-  // -------------------------
   const calculateEV = (modelProb, ml1, ml2) => {
     const fair1 = modelProb;
     const fair2 = 1 - modelProb;
@@ -751,10 +684,7 @@ const SportsPredictionModel = () => {
     const { weights, bias, means, stds, features } = modelParams;
 
     const missing = features.filter(
-      (f) =>
-        matchupInputs[f] === undefined ||
-        matchupInputs[f] === null ||
-        matchupInputs[f] === ''
+      (f) => matchupInputs[f] === undefined || matchupInputs[f] === null || matchupInputs[f] === ''
     );
     if (missing.length) {
       alert(`Missing: ${missing.join(', ')}`);
@@ -764,10 +694,7 @@ const SportsPredictionModel = () => {
     let team1Fair = null;
     let team2Fair = null;
 
-    if (
-      features.includes('team1_moneyline') &&
-      features.includes('team2_moneyline')
-    ) {
+    if (features.includes('team1_moneyline') && features.includes('team2_moneyline')) {
       const ml1 = parseFloat(matchupInputs['team1_moneyline']);
       const ml2 = parseFloat(matchupInputs['team2_moneyline']);
       const p1 = moneylineToFairProb(ml1);
@@ -785,8 +712,7 @@ const SportsPredictionModel = () => {
     });
 
     const xNorm = raw.map((v, j) => (v - means[j]) / stds[j]);
-    const z =
-      bias + weights.reduce((s, w, j) => s + w * xNorm[j], 0);
+    const z = bias + weights.reduce((s, w, j) => s + w * xNorm[j], 0);
     const p = sigmoid(z);
 
     const t1Prob = p;
@@ -820,10 +746,7 @@ const SportsPredictionModel = () => {
       'Top Features:',
       ...featureImportance
         .slice(0, 5)
-        .map(
-          (f, i) =>
-            `${i + 1}. ${f.feature.replace(/_/g, ' ')} → ${f.weight.toFixed(3)}`
-        ),
+        .map((f, i) => `${i + 1}. ${f.feature.replace(/_/g, ' ')} → ${f.weight.toFixed(3)}`),
       '',
       'Model is ready for live betting (simulation / educational use only).',
       `Generated: ${new Date().toLocaleString()}`,
@@ -837,9 +760,6 @@ const SportsPredictionModel = () => {
     URL.revokeObjectURL(url);
   };
 
-  // -------------------------
-  // JSX
-  // -------------------------
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
@@ -852,14 +772,13 @@ const SportsPredictionModel = () => {
                   Pro Sports Prediction Model
                 </h1>
                 <p className="text-blue-100 mt-2">
-                  No-Vig • +EV Detection • Calibration • Feature Importance
+                  No-Vig • +EV Detection • Append Mode • Feature Importance
                 </p>
               </div>
             </div>
           </div>
 
           <div className="p-6 md:p-10 space-y-10">
-            {/* Sport tabs */}
             <div className="grid grid-cols-3 md:grid-cols-5 gap-4">
               {Object.entries(sports).map(([key, s]) => (
                 <button
@@ -876,24 +795,22 @@ const SportsPredictionModel = () => {
               ))}
             </div>
 
-            {/* Training section */}
             <div className="grid lg:grid-cols-2 gap-8">
               <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
                 <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
                   <Database className="text-blue-400" /> Training Data
                 </h2>
 
-                <div className="mb-4">
-                  <label className="flex items-center gap-3 text-white cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={appendMode}
-                      onChange={(e) => setAppendMode(e.target.checked)}
-                      className="w-5 h-5 rounded border-white/40 bg-black/40"
-                    />
-                    <span className="font-semibold text-sm md:text-base">
-                      Append to existing data (don&apos;t replace)
-                    </span>
+                <div className="mb-6 flex items-center gap-3 p-4 bg-blue-500/10 rounded-xl border border-blue-400/30">
+                  <input
+                    id="append-mode"
+                    type="checkbox"
+                    checked={appendMode}
+                    onChange={(e) => setAppendMode(e.target.checked)}
+                    className="w-5 h-5 rounded accent-blue-500 cursor-pointer"
+                  />
+                  <label htmlFor="append-mode" className="text-white font-semibold cursor-pointer flex-1">
+                    📎 Append to existing {trainingData.length} games (don't replace)
                   </label>
                 </div>
 
@@ -901,15 +818,11 @@ const SportsPredictionModel = () => {
                   <div className="border-2 border-dashed border-white/30 rounded-2xl p-10 text-center hover:border-blue-400 transition-all">
                     <Upload className="w-16 h-16 text-blue-400 mx-auto mb-4" />
                     <p className="text-xl font-bold text-white">Upload CSV</p>
-                    {fileName && (
-                      <p className="text-sm text-gray-400 mt-2">{fileName}</p>
-                    )}
-                    <input
-                      type="file"
-                      accept=".csv"
-                      onChange={handleDataUpload}
-                      className="hidden"
-                    />
+                    <p className="text-sm text-gray-400 mt-2">
+                      {appendMode ? 'Will add to existing data' : 'Will replace current data'}
+                    </p>
+                    {fileName && <p className="text-sm text-gray-400 mt-2">{fileName}</p>}
+                    <input type="file" accept=".csv" onChange={handleDataUpload} className="hidden" />
                   </div>
                 </label>
 
@@ -919,7 +832,7 @@ const SportsPredictionModel = () => {
                       Loaded {trainingData.length} games
                     </p>
                     {trainingStats && (
-                      <p className="text-sm mt-2">
+                      <p className="text-sm mt-2 text-green-200">
                         Accuracy: <strong>{trainingStats.accuracy}%</strong> on{' '}
                         {trainingStats.samplesUsed} clean games
                       </p>
@@ -937,23 +850,16 @@ const SportsPredictionModel = () => {
 
                 {modelTrained && (
                   <div className="mt-6 p-6 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-xl border border-blue-400/40">
-                    <p className="text-blue-300 font-bold text-lg">
-                      Pro Model Ready
-                    </p>
+                    <p className="text-blue-300 font-bold text-lg">Pro Model Ready</p>
                     {featureImportance && (
                       <div className="mt-4 space-y-2">
                         <p className="text-sm text-blue-200">Top Features:</p>
                         {featureImportance.slice(0, 4).map((f, i) => (
-                          <div
-                            key={i}
-                            className="flex justify-between text-sm"
-                          >
+                          <div key={i} className="flex justify-between text-sm">
                             <span className="text-blue-100">
                               {i + 1}. {f.feature.replace(/_/g, ' ')}
                             </span>
-                            <span className="font-mono text-blue-300">
-                              {f.weight.toFixed(3)}
-                            </span>
+                            <span className="font-mono text-blue-300">{f.weight.toFixed(3)}</span>
                           </div>
                         ))}
                       </div>
@@ -962,12 +868,9 @@ const SportsPredictionModel = () => {
                 )}
               </div>
 
-              {/* Quick actions */}
               <div className="space-y-6">
                 <div className="bg-white/5 rounded-2xl p-6 border border-white/10">
-                  <h3 className="text-xl font-bold text-white mb-4">
-                    Quick Actions
-                  </h3>
+                  <h3 className="text-xl font-bold text-white mb-4">Quick Actions</h3>
                   <div className="grid grid-cols-2 gap-4">
                     <button
                       onClick={downloadTemplate}
@@ -1006,12 +909,10 @@ const SportsPredictionModel = () => {
               </div>
             </div>
 
-            {/* Prediction section */}
             {modelTrained && (
               <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
                 <h2 className="text-3xl font-bold text-white mb-8 flex items-center gap-4">
-                  <Target className="text-purple-400" /> Predict Matchup + Find
-                  +EV
+                  <Target className="text-purple-400" /> Predict Matchup + Find +EV
                 </h2>
 
                 <div className="grid lg:grid-cols-4 gap-6 mb-8">
@@ -1075,9 +976,7 @@ const SportsPredictionModel = () => {
                   <div className="space-y-8">
                     <div className="grid md:grid-cols-2 gap-8">
                       <div className="bg-gradient-to-br from-blue-600/30 to-blue-800/30 rounded-2xl p-8 border border-blue-400/50">
-                        <h3 className="text-2xl font-bold text-blue-300 mb-6">
-                          Team 1
-                        </h3>
+                        <h3 className="text-2xl font-bold text-blue-300 mb-6">Team 1</h3>
                         <div className="text-5xl font-bold text-white mb-4">
                           {prediction.team1_win_prob}%
                         </div>
@@ -1086,9 +985,7 @@ const SportsPredictionModel = () => {
                         </div>
                       </div>
                       <div className="bg-gradient-to-br from-purple-600/30 to-pink-600/30 rounded-2xl p-8 border border-purple-400/50">
-                        <h3 className="text-2xl font-bold text-purple-300 mb-6">
-                          Team 2
-                        </h3>
+                        <h3 className="text-2xl font-bold text-purple-300 mb-6">Team 2</h3>
                         <div className="text-5xl font-bold text-white mb-4">
                           {prediction.team2_win_prob}%
                         </div>
@@ -1107,13 +1004,11 @@ const SportsPredictionModel = () => {
                         }`}
                       >
                         <h3 className="text-3xl font-bold text-white mb-4">
-                          {parseFloat(evResult.bestEV) > 5
-                            ? 'STRONG +EV DETECTED'
-                            : 'No Edge Found'}
+                          {parseFloat(evResult.bestEV) > 5 ? 'STRONG +EV DETECTED' : 'No Edge Found'}
                         </h3>
                         <p className="text-5xl font-bold text-white">
-                          {evResult.side === 'Team 1' ? 'BET TEAM 1' : 'BET TEAM 2'}{' '}
-                          → +{evResult.bestEV}% EV
+                          {evResult.side === 'Team 1' ? 'BET TEAM 1' : 'BET TEAM 2'} → +
+                          {evResult.bestEV}% EV
                         </p>
                         <p className="text-xl text-gray-300 mt-4">
                           Bet $100 → Expected Profit:{' '}
