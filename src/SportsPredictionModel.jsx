@@ -1,455 +1,1032 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Upload, TrendingUp, Download, Trash2, CheckCircle,
-  XCircle, Minus, AlertCircle, Football, Basketball,
-  TableTennis, Trophy, Calendar
+  Upload,
+  Database,
+  Target,
+  Download,
+  Sparkles,
 } from 'lucide-react';
-import Papa from 'papaparse'; // Add: npm install papaparse
 
-const SPORTS = [
-  { value: 'nfl', label: 'NFL', icon: Football },
-  { value: 'ncaaf', label: 'NCAAF', icon: Football },
-  { value: 'ncaab', label: 'NCAAB', icon: Basketball },
-  { value: 'nba', label: 'NBA', icon: Basketball },
-  { value: 'tennis', label: 'Tennis', icon: Trophy },
-  { value: 'tabletennis', label: 'Table Tennis', icon: TableTennis },
-] as const;
+const SportsPredictionModel = () => {
+  const [selectedSport, setSelectedSport] = useState('nfl');
+  const [trainingData, setTrainingData] = useState([]);
+  const [modelTrained, setModelTrained] = useState(false);
+  const [modelParams, setModelParams] = useState(null);
+  const [prediction, setPrediction] = useState(null);
+  const [matchupInputs, setMatchupInputs] = useState({});
+  const [actualML1, setActualML1] = useState('');
+  const [actualML2, setActualML2] = useState('');
+  const [evResult, setEvResult] = useState(null);
+  const [fileName, setFileName] = useState('');
+  const [isTraining, setIsTraining] = useState(false);
+  const [trainingStats, setTrainingStats] = useState(null);
+  const [featureImportance, setFeatureImportance] = useState(null);
+  const [calibration, setCalibration] = useState(null);
+  const [appendMode, setAppendMode] = useState(false);
 
-type Sport = typeof SPORTS[number]['value'];
+  const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
 
-interface Game {
-  id: number;
-  sport: Sport;
-  date: string;
-  homeTeam: string;
-  awayTeam: string;
-  homeMoneyline: string;
-  awayMoneyline: string;
-  spread?: string;
-  total?: string;
-  homeScore?: string;
-  awayScore?: string;
-  bet: string;
-  betAmount: string;
-  homeLast5?: string;
-  awayLast5?: string;
-  notes?: string;
-}
+  const sports = {
+    nfl: {
+      name: 'NFL',
+      features: ['team1_moneyline', 'team2_moneyline', 'team1_last5', 'team2_last5'],
+      isTeamSeasonSport: true,
+    },
+    ncaaf: {
+      name: 'NCAAF',
+      features: ['team1_moneyline', 'team2_moneyline', 'team1_last5', 'team2_last5'],
+      isTeamSeasonSport: true,
+    },
+    ncaab: {
+      name: 'NCAAB',
+      features: ['team1_moneyline', 'team2_moneyline', 'team1_last5', 'team2_last5'],
+      isTeamSeasonSport: true,
+    },
+    tennis: {
+      name: 'Tennis',
+      features: [
+        'player1_ranking',
+        'player2_ranking',
+        'surface',
+        'player1_form',
+        'player2_form',
+        'head_to_head',
+        'fatigue_factor',
+      ],
+      isTeamSeasonSport: false,
+    },
+    table_tennis: {
+      name: 'Table Tennis',
+      features: [
+        'player1_ranking',
+        'player2_ranking',
+        'player1_recent_form',
+        'player2_recent_form',
+        'head_to_head',
+        'tournament_level',
+      ],
+      isTeamSeasonSport: false,
+    },
+  };
 
-const SportsBettingTracker = () => {
-  const [games, setGames] = useState<Game[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedSport, setSelectedSport] = useState<Sport>('nfl');
+  // ✅ FIXED: Load backend first, localStorage as fallback
+  useEffect(() => {
+    const loadSaved = async () => {
+      try {
+        let loadedFromBackend = false;
+
+        // Try backend FIRST
+        if (API_BASE) {
+          try {
+            const tdRes = await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`);
+            if (tdRes.ok) {
+              const tdData = await tdRes.json();
+              const rows = Array.isArray(tdData.rows) ? tdData.rows : Array.isArray(tdData) ? tdData : [];
+              if (rows.length) {
+                setTrainingData(rows);
+                setFileName('(loaded from server)');
+                loadedFromBackend = true;
+              }
+            }
+
+            const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
+            if (modelRes.ok) {
+              const data = await modelRes.json();
+              if (data.modelParams) {
+                setModelParams(data.modelParams);
+                setModelTrained(true);
+                loadedFromBackend = true;
+              }
+              if (data.trainingStats) setTrainingStats(data.trainingStats);
+            }
+          } catch (err) {
+            console.warn('Backend unavailable, falling back to localStorage', err);
+          }
+        }
+
+        // Fall back to localStorage if backend failed or empty
+        if (!loadedFromBackend && typeof window !== 'undefined') {
+          const lsTraining = window.localStorage.getItem(`spm_training_${selectedSport}`);
+          if (lsTraining) {
+            try {
+              const rows = JSON.parse(lsTraining);
+              if (Array.isArray(rows) && rows.length) {
+                setTrainingData(rows);
+                setFileName('(loaded from browser)');
+              }
+            } catch (e) {
+              console.warn('Failed to parse localStorage training data', e);
+            }
+          }
+
+          const lsModel = window.localStorage.getItem(`spm_model_${selectedSport}`);
+          if (lsModel) {
+            try {
+              const parsed = JSON.parse(lsModel);
+              if (parsed.modelParams) {
+                setModelParams(parsed.modelParams);
+                setModelTrained(true);
+              }
+              if (parsed.trainingStats) setTrainingStats(parsed.trainingStats);
+            } catch (e) {
+              console.warn('Failed to parse localStorage model', e);
+            }
+          }
+        }
+
+        setPrediction(null);
+        setEvResult(null);
+        setMatchupInputs({});
+        setAppendMode(false);
+      } catch (err) {
+        console.error('Error loading saved data', err);
+      }
+    };
+
+    loadSaved();
+  }, [selectedSport, API_BASE]);
+
+  // Auto-save to localStorage
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        `spm_training_${selectedSport}`,
+        JSON.stringify(trainingData || [])
+      );
+    } catch (e) {
+      console.warn('Failed to save training data to localStorage', e);
+    }
+  }, [trainingData, selectedSport]);
 
   useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+    if (typeof window === 'undefined') return;
     try {
-      const result = await window.storage?.get('betting-games-v3', true);
-      if (result?.value) {
-        const parsed = JSON.parse(result.value);
-        setGames(parsed);
+      if (modelParams) {
+        window.localStorage.setItem(
+          `spm_model_${selectedSport}`,
+          JSON.stringify({ modelParams, trainingStats })
+        );
+      } else {
+        window.localStorage.removeItem(`spm_model_${selectedSport}`);
       }
     } catch (e) {
-      console.log('No saved data');
+      console.warn('Failed to save model to localStorage', e);
     }
-    setLoading(false);
+  }, [modelParams, trainingStats, selectedSport]);
+
+  const sigmoid = (z) => 1 / (1 + Math.exp(-z));
+
+  const moneylineToFairProb = (ml) => {
+    const num = Number(ml);
+    if (!Number.isFinite(num)) return 0.5;
+    if (num > 0) return 100 / (num + 100);
+    const neg = Math.abs(num);
+    return neg / (neg + 100);
   };
 
-  const saveData = async (newGames: Game[]) => {
-    try {
-      await window.storage?.set('betting-games-v3', JSON.stringify(newGames), true);
-      setGames(newGames);
-    } catch (e) {
-      alert('Save failed');
+  const removeVig = (p1, p2) => {
+    const total = p1 + p2;
+    if (!Number.isFinite(total) || total <= 1.0001) return { p1, p2 };
+    return { p1: p1 / total, p2: p2 / total };
+  };
+
+  const probToMoneyline = (prob) => {
+    if (!Number.isFinite(prob) || prob <= 0 || prob >= 1) return 0;
+    if (prob >= 0.5) return Math.round(-(prob / (1 - prob)) * 100);
+    return Math.round(((1 - prob) / prob) * 100);
+  };
+
+  const formatMoneyline = (ml) => {
+    const m = Math.round(Number(ml));
+    if (!Number.isFinite(m)) return 'N/A';
+    return m > 0 ? `+${m}` : m.toString();
+  };
+
+  const trainLogisticRegression = (X, y, options = {}) => {
+    const nSamples = X.length;
+    const nFeatures = X[0].length;
+    const learningRate = options.learningRate ?? 0.12;
+    const epochs = options.epochs ?? 500;
+    const lambda = options.lambda ?? 0.012;
+
+    const means = X[0].map((_, j) => {
+      let sum = 0;
+      for (let i = 0; i < nSamples; i++) {
+        const v = Number.isFinite(X[i][j]) ? X[i][j] : 0;
+        sum += v;
+      }
+      return sum / nSamples;
+    });
+
+    const stds = X[0].map((_, j) => {
+      let variance = 0;
+      for (let i = 0; i < nSamples; i++) {
+        const v = Number.isFinite(X[i][j]) ? X[i][j] : 0;
+        const diff = v - means[j];
+        variance += diff * diff;
+      }
+      variance /= nSamples;
+      const s = Math.sqrt(variance);
+      return s || 1;
+    });
+
+    const Xnorm = X.map((row) =>
+      row.map((val, j) => {
+        const v = Number.isFinite(val) ? val : 0;
+        return (v - means[j]) / stds[j];
+      })
+    );
+
+    let weights = Array(nFeatures).fill(0);
+    let bias = 0;
+
+    for (let epoch = 0; epoch < epochs; epoch++) {
+      let gradW = Array(nFeatures).fill(0);
+      let gradB = 0;
+
+      for (let i = 0; i < nSamples; i++) {
+        const z = bias + weights.reduce((sum, w, j) => sum + w * Xnorm[i][j], 0);
+        const p = sigmoid(z);
+        const error = p - y[i];
+        gradW = gradW.map((g, j) => g + error * Xnorm[i][j]);
+        gradB += error;
+      }
+
+      gradW = gradW.map((g) => g / nSamples);
+      gradB /= nSamples;
+
+      weights = weights.map((w, j) => w - learningRate * (gradW[j] + lambda * w));
+      bias -= learningRate * gradB;
     }
-  };
 
-  const moneylineToProb = (ml: string): string => {
-    const m = parseFloat(ml);
-    if (!isFinite(m) || m === 0) return '—';
-    return m > 0
-      ? (100 / (m + 100) * 100).toFixed(1)
-      : (Math.abs(m) / (Math.abs(m) + 100) * 100).toFixed(1);
-  };
+    const preds = Xnorm.map((row) => {
+      const z = bias + weights.reduce((sum, w, j) => sum + w * row[j], 0);
+      return sigmoid(z);
+    });
 
-  const isTennisLike = (sport: Sport) => sport === 'tennis' || sport === 'tabletennis';
-
-  const checkSpreadWinner = (game: Game) => {
-    if (isTennisLike(game.sport) || !game.spread || !game.homeScore || !game.awayScore) return null;
-    const hs = parseFloat(game.homeScore);
-    const as = parseFloat(game.awayScore);
-    const spread = parseFloat(game.spread);
-    if (!isFinite(hs) || !isFinite(as) || !isFinite(spread)) return null;
-    const adjusted = hs + spread;
-    if (adjusted > as) return 'home';
-    if (adjusted < as) return 'away';
-    return 'push';
-  };
-
-  const checkWinner = (game: Game) => {
-    if (!game.homeScore || !game.awayScore) return null;
-    const hs = parseFloat(game.homeScore);
-    const as = parseFloat(game.awayScore);
-    if (!isFinite(hs) || !isFinite(as)) return null;
-    if (hs > as) return 'home';
-    if (hs < as) return 'away';
-    return 'tie';
-  };
-
-  const calculateResult = (game: Game) => {
-    if (!game.bet || !game.homeScore || !game.awayScore) return null;
-    const amount = parseFloat(game.betAmount) || 0;
-    const betLower = game.bet.toLowerCase();
-
-    const isSpreadBet = !!game.spread && !isTennisLike(game.sport);
-    let won = false;
-    let push = false;
-
-    if (isSpreadBet) {
-      const res = checkSpreadWinner(game);
-      if (res === 'push') push = true;
-      else won = (betLower.includes('home') && res === 'home') || (betLower.includes('away') && res === 'away');
-    } else {
-      const res = checkWinner(game);
-      if (res === 'tie') push = true;
-      else won = (betLower.includes('home') && res === 'home') || (betLower.includes('away') && res === 'away');
+    let correct = 0;
+    for (let i = 0; i < nSamples; i++) {
+      const p = preds[i];
+      if (!Number.isFinite(p)) continue;
+      const label = p >= 0.5 ? 1 : 0;
+      if (label === y[i]) correct++;
     }
+    const accuracy = correct / nSamples;
 
-    if (push) return { result: 'push', profit: 0 } as const;
-    if (!won) return { result: 'loss', profit: -amount } as const;
+    const bins = Array(10).fill().map(() => ({ pred: 0, actual: 0, count: 0 }));
+    preds.forEach((p, i) => {
+      if (!Number.isFinite(p)) return;
+      let bin = Math.floor(p * 10);
+      if (bin < 0) bin = 0;
+      if (bin > 9) bin = 9;
+      bins[bin].pred += p;
+      bins[bin].actual += y[i];
+      bins[bin].count += 1;
+    });
 
-    const mlStr = betLower.includes('home') ? game.homeMoneyline : game.awayMoneyline;
-    const ml = parseFloat(mlStr);
-    if (!isFinite(ml)) return { result: 'win', profit: amount };
-
-    const profit = ml > 0
-      ? amount * (ml / 100)
-      : amount * (100 / Math.abs(ml));
-
-    return { result: 'win', profit } as const;
+    return {
+      weights,
+      bias,
+      means,
+      stds,
+      accuracy,
+      samplesUsed: nSamples,
+      calibration: bins,
+    };
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const addLast5WinColumns = (rows) => {
+    const history = {};
+    return rows.map((row) => {
+      const team1 = row.team1;
+      const team2 = row.team2;
+      const t1Hist = history[team1] || [];
+      const t2Hist = history[team2] || [];
+
+      const t1Last5 = t1Hist.slice(-5);
+      const t2Last5 = t2Hist.slice(-5);
+
+      const t1Rate = t1Last5.length > 0 ? t1Last5.reduce((a, b) => a + b, 0) / t1Last5.length : 0.5;
+      const t2Rate = t2Last5.length > 0 ? t2Last5.reduce((a, b) => a + b, 0) / t2Last5.length : 0.5;
+
+      const winner = Number(row.winner);
+      const t1Result = winner === 1 ? 1 : 0;
+      const t2Result = winner === 0 ? 1 : 0;
+
+      history[team1] = [...t1Hist, t1Result];
+      history[team2] = [...t2Hist, t2Result];
+
+      return {
+        ...row,
+        team1_last5: t1Rate,
+        team2_last5: t2Rate,
+      };
+    });
+  };
+
+  const parseCSV = (text) => {
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    if (lines.length < 2) return [];
+
+    const header = lines[0].split(',').map((h) => h.trim());
+    return lines.slice(1).map((line) => {
+      const parts = line.split(',');
+      const obj = {};
+      header.forEach((key, idx) => {
+        const raw = (parts[idx] ?? '').trim();
+        if (raw === '') {
+          obj[key] = '';
+        } else if (!Number.isNaN(Number(raw))) {
+          obj[key] = Number(raw);
+        } else {
+          obj[key] = raw;
+        }
+      });
+      if (obj.winner !== undefined) {
+        const w = Number(obj.winner);
+        obj.winner = w === 1 ? 1 : w === 0 ? 0 : obj.winner;
+      }
+      return obj;
+    });
+  };
+
+  // ✅ FIXED: Properly handle append mode with last-5 recalculation
+  const handleDataUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setFileName(file.name);
 
-    Papa.parse(file, {
-      complete: (results) => {
-        try {
-          const rows = results.data as string[][];
-          if (rows.length < 2) throw new Error('Empty file');
+    try {
+      const text = await file.text();
+      let newRows = parseCSV(text);
 
-          const newGames: Game[] = rows.slice(1).map((row: string[], i) => {
-            return {
-              id: Date.now() + i,
-              sport: (row[0]?.toLowerCase() as Sport) || selectedSport,
-              date: row[1] || '',
-              homeTeam: row[2] || '',
-              awayTeam: row[3] || '',
-              homeMoneyline: row[4] || '',
-              awayMoneyline: row[5] || '',
-              spread: row[6] || '',
-              total: row[7] || '',
-              homeScore: row[8] || '',
-              awayScore: row[9] || '',
-              bet: row[10] || '',
-              betAmount: row[11] || '',
-            };
-          }).filter(g => g.homeTeam && g.awayTeam);
+      let finalRows;
 
-          // Auto-calculate Last 5 per sport
-          const sorted = [...games, ...newGames].sort((a, b) => 
-            new Date(a.date).getTime() - new Date(b.date).getTime()
-          );
-
-          const teamHistory: Record<string, { sport: Sport; wins: number[]; count: number }> = {};
-
-          sorted.forEach(game => {
-            if (!game.homeScore || !game.awayScore) return;
-
-            const homeWon = parseFloat(game.homeScore) > parseFloat(game.awayScore);
-            const keyHome = `${game.sport}-${game.homeTeam}`;
-            const keyAway = `${game.sport}-${game.awayTeam}`;
-
-            if (!teamHistory[keyHome]) teamHistory[keyHome] = { sport: game.sport, wins: [], count: 0 };
-            if (!teamHistory[keyAway]) teamHistory[keyAway] = { sport: game.sport, wins: [], count: 0 };
-
-            teamHistory[keyHome].wins.push(homeWon ? 1 : 0);
-            teamHistory[keyAway].wins.push(homeWon ? 0 : 1);
-            teamHistory[keyHome].count++;
-            teamHistory[keyAway].count++;
-
-            const h5 = teamHistory[keyHome].wins.slice(-5);
-            const a5 = teamHistory[keyAway].wins.slice(-5);
-            game.homeLast5 = `${h5.filter(w => w).length}-${h5.length - h5.filter(w => w).length}`;
-            game.awayLast5 = `${a5.filter(w => w).length}-${a5.length - a5.filter(w => w).length}`;
-          });
-
-          saveData(sorted);
-          alert(`Uploaded ${newGames.length} games! Last 5 records auto-calculated.`);
-        } catch (err) {
-          alert('CSV format error. Use template.');
+      if (sports[selectedSport].isTeamSeasonSport) {
+        if (appendMode && trainingData.length > 0) {
+          // ✅ CRITICAL FIX: Combine first, THEN calculate last-5 on full dataset
+          const combined = [...trainingData, ...newRows];
+          finalRows = addLast5WinColumns(combined);
+        } else {
+          // First upload or replace mode
+          finalRows = addLast5WinColumns(newRows);
         }
-      },
-      error: () => alert('Parse failed'),
-    });
+      } else {
+        // Non-team sports (tennis, table tennis)
+        finalRows = appendMode ? [...trainingData, ...newRows] : newRows;
+      }
 
-    e.target.value = '';
-  };
+      setTrainingData(finalRows);
+      setTrainingStats(null);
+      setModelTrained(false);
+      setModelParams(null);
+      setPrediction(null);
+      setEvResult(null);
 
-  const addGame = () => {
-    const newGame: Game = {
-      id: Date.now(),
-      sport: selectedSport,
-      date: new Date().toISOString().split('T')[0],
-      homeTeam: '',
-      awayTeam: '',
-      homeMoneyline: '',
-      awayMoneyline: '',
-      spread: '',
-      total: '',
-      homeScore: '',
-      awayScore: '',
-      bet: '',
-      betAmount: '',
-    };
-    saveData([...games, newGame]);
-  };
+      try {
+        await fetch(`${API_BASE}/api/training-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sport: selectedSport,
+            rows: finalRows,
+          }),
+        });
+      } catch (err) {
+        console.warn('Failed to save training data to backend', err);
+      }
 
-  const updateGame = (id: number, field: keyof Game, value: string) => {
-    const updated = games.map(g => g.id === id ? { ...g, [field]: value } : g);
-    saveData(updated);
-  };
-
-  const deleteGame = (id: number) => {
-    if (confirm('Delete this bet?')) {
-      saveData(games.filter(g => g.id !== id));
+      alert(
+        appendMode
+          ? `✅ Added ${newRows.length} games (Total: ${finalRows.length})`
+          : `✅ Loaded ${finalRows.length} games`
+      );
+    } catch (err) {
+      console.error('Upload failed', err);
+      alert('Failed to read CSV');
+    } finally {
+      e.target.value = '';
     }
   };
 
-  const clearAll = () => {
-    if (confirm('Delete ALL data?')) {
-      window.storage?.delete('betting-games-v3', true);
-      setGames([]);
+  const exportTrainingData = () => {
+    if (!trainingData.length) {
+      alert('No training data to export');
+      return;
     }
-  };
-
-  const stats = (() => {
-    const completed = games.filter(g => g.homeScore && g.awayScore && g.bet);
-    let wins = 0, losses = 0, pushes = 0, profit = 0, wagered = 0;
-    completed.forEach(g => {
-      const res = calculateResult(g);
-      if (!res) return;
-      const amt = parseFloat(g.betAmount) || 0;
-      wagered += amt;
-      if (res.result === 'win') { wins++; profit += res.profit; }
-      else if (res.result === 'loss') { losses++; profit += res.profit; }
-      else pushes++;
-    });
-    const roi = wagered > 0 ? (profit / wagered) * 100 : 0;
-    return { wins, losses, pushes, profit: profit.toFixed(2), roi: roi.toFixed(1), total: completed.length };
-  })();
-
-  const downloadTemplate = () => {
-    const csv = `Sport,Date,Home Team,Away Team,Home ML,Away ML,Spread,Total,Home Score,Away Score,Bet On,Bet Amount
-nfl,2025-01-01,Chiefs,Bills,-150,+130,-3.5,48.5,27,24,Bills,100
-tennis,2025-01-02,Alcaraz,Sinner,-220,+180,,,2,1,Sinner,50`;
+    const keys = Array.from(new Set(trainingData.flatMap((row) => Object.keys(row))));
+    const header = keys.join(',');
+    const rows = trainingData.map((row) =>
+      keys
+        .map((k) => {
+          const v = row[k];
+          if (v === undefined || v === null) return '';
+          return String(v).replace(/,/g, '');
+        })
+        .join(',')
+    );
+    const csv = [header, ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'betting-template-2025.csv'; a.click();
+    a.href = url;
+    a.download = `${selectedSport}_training_data.csv`;
+    a.click();
     URL.revokeObjectURL(url);
   };
 
-  if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white">Loading...</div>;
+  const importSavedData = async () => {
+    try {
+      const tdRes = await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`);
+      if (tdRes.ok) {
+        const tdData = await tdRes.json();
+        const rows = Array.isArray(tdData.rows) ? tdData.rows : Array.isArray(tdData) ? tdData : [];
+        setTrainingData(rows);
+        setFileName('(loaded from server)');
+        alert(`Loaded ${rows.length} games from server`);
+      } else {
+        alert('No saved training data found on server');
+      }
 
-  const filteredGames = games.filter(g => g.sport === selectedSport);
+      const modelRes = await fetch(`${API_BASE}/api/model?sport=${selectedSport}`);
+      if (modelRes.ok) {
+        const data = await modelRes.json();
+        if (data.modelParams) {
+          setModelParams(data.modelParams);
+          setModelTrained(true);
+        } else {
+          setModelParams(null);
+          setModelTrained(false);
+        }
+        if (data.trainingStats) setTrainingStats(data.trainingStats);
+      }
+    } catch (err) {
+      console.error('Import failed', err);
+      alert('Failed to load saved data');
+    }
+  };
+
+  const clearSportData = async () => {
+    if (!window.confirm(`Clear all data for ${sports[selectedSport].name}?`)) return;
+
+    setTrainingData([]);
+    setModelParams(null);
+    setModelTrained(false);
+    setTrainingStats(null);
+    setFeatureImportance(null);
+    setPrediction(null);
+    setEvResult(null);
+    setMatchupInputs({});
+    setActualML1('');
+    setActualML2('');
+    setFileName('');
+
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(`spm_training_${selectedSport}`);
+        window.localStorage.removeItem(`spm_model_${selectedSport}`);
+      }
+    } catch (e) {
+      console.warn('Failed to clear localStorage', e);
+    }
+
+    try {
+      await fetch(`${API_BASE}/api/training-data?sport=${selectedSport}`, {
+        method: 'DELETE',
+      }).catch(() => {});
+      await fetch(`${API_BASE}/api/model?sport=${selectedSport}`, {
+        method: 'DELETE',
+      }).catch(() => {});
+    } catch (err) {
+      console.warn('Failed to clear backend data', err);
+    }
+  };
+
+  const downloadTemplate = () => {
+    const sportDef = sports[selectedSport];
+    let baseCols = [];
+
+    if (sportDef.isTeamSeasonSport) {
+      baseCols = ['team1', 'team2', 'team1_moneyline', 'team2_moneyline', 'winner'];
+    } else if (selectedSport === 'tennis') {
+      baseCols = [
+        'player1',
+        'player2',
+        'player1_ranking',
+        'player2_ranking',
+        'surface',
+        'player1_form',
+        'player2_form',
+        'head_to_head',
+        'fatigue_factor',
+        'winner',
+      ];
+    } else if (selectedSport === 'table_tennis') {
+      baseCols = [
+        'player1',
+        'player2',
+        'player1_ranking',
+        'player2_ranking',
+        'player1_recent_form',
+        'player2_recent_form',
+        'head_to_head',
+        'tournament_level',
+        'winner',
+      ];
+    }
+
+    const exampleRow = baseCols
+      .map((c) => {
+        if (c === 'winner') return '1';
+        if (c.includes('moneyline')) return '-150';
+        if (c.includes('ranking')) return '10';
+        if (c.includes('form')) return '0.6';
+        if (c === 'surface') return 'hard';
+        if (c === 'tournament_level') return '250';
+        if (c === 'team1' || c === 'player1') return 'TeamA';
+        if (c === 'team2' || c === 'player2') return 'TeamB';
+        return '';
+      })
+      .join(',');
+
+    const csv = [baseCols.join(','), exampleRow].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedSport}_template.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const trainModel = async () => {
+    if (trainingData.length < 20) {
+      alert('Need at least 20 games');
+      return;
+    }
+
+    const { features } = sports[selectedSport];
+    const usable = trainingData.filter(
+      (r) => r.winner === 0 || r.winner === 1 || r.winner === '0' || r.winner === '1'
+    );
+
+    if (!usable.length) {
+      alert('No rows with winner = 0 or 1');
+      return;
+    }
+
+    const X = usable.map((row) =>
+      features.map((f) => {
+        if (f.includes('moneyline')) {
+          const p1 = moneylineToFairProb(row.team1_moneyline);
+          const p2 = moneylineToFairProb(row.team2_moneyline);
+          const { p1: fair1, p2: fair2 } = removeVig(p1, p2);
+          const val = f === 'team1_moneyline' ? fair1 : fair2;
+          return Number.isFinite(val) ? val : 0.5;
+        }
+        const raw = row[f];
+        const num = Number(raw);
+        return Number.isFinite(num) ? num : 0;
+      })
+    );
+
+    const y = usable.map((r) => Number(r.winner));
+
+    setIsTraining(true);
+
+    let model;
+    let stats;
+    let importance;
+    let calib;
+
+    try {
+      const result = trainLogisticRegression(X, y, {
+        learningRate: 0.12,
+        epochs: 500,
+        lambda: 0.012,
+      });
+
+      const { weights, bias, means, stds, accuracy, samplesUsed, calibration: c } = result;
+
+      model = { weights, bias, means, stds, features };
+      stats = {
+        accuracy: (accuracy * 100).toFixed(1),
+        samplesUsed,
+      };
+      calib = c;
+
+      importance = features
+        .map((f, i) => ({ feature: f, weight: Math.abs(weights[i]) }))
+        .sort((a, b) => b.weight - a.weight);
+
+      setModelParams(model);
+      setModelTrained(true);
+      setTrainingStats(stats);
+      setCalibration(calib);
+      setFeatureImportance(importance);
+
+      alert(`PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(1)}% accuracy`);
+    } catch (err) {
+      console.error('Training error', err);
+      alert(`Training failed: ${err?.message || 'unexpected error'}`);
+      setIsTraining(false);
+      return;
+    }
+
+    try {
+      await fetch(`${API_BASE}/api/model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sport: selectedSport,
+          modelParams: model,
+          trainingStats: stats,
+        }),
+      });
+    } catch (err) {
+      console.warn('Failed to save model to backend:', err);
+    } finally {
+      setIsTraining(false);
+    }
+  };
+
+  const calculateEV = (modelProb, ml1, ml2) => {
+    const fair1 = modelProb;
+    const fair2 = 1 - modelProb;
+
+    const payout1 = ml1 > 0 ? ml1 / 100 + 1 : 1 + 100 / Math.abs(ml1);
+    const payout2 = ml2 > 0 ? ml2 / 100 + 1 : 1 + 100 / Math.abs(ml2);
+
+    const ev1 = (fair1 * payout1 - (1 - fair1)) * 100;
+    const ev2 = (fair2 * payout2 - (1 - fair2)) * 100;
+
+    const bestEV = Math.max(ev1, ev2);
+    const side = ev1 > ev2 ? 'Team 1' : 'Team 2';
+
+    setEvResult({
+      ev1: ev1.toFixed(1),
+      ev2: ev2.toFixed(1),
+      bestEV: bestEV.toFixed(1),
+      side,
+    });
+  };
+
+  const calculatePrediction = () => {
+    if (!modelTrained || !modelParams) {
+      alert('Train model first');
+      return;
+    }
+
+    const { weights, bias, means, stds, features } = modelParams;
+
+    const missing = features.filter(
+      (f) => matchupInputs[f] === undefined || matchupInputs[f] === null || matchupInputs[f] === ''
+    );
+    if (missing.length) {
+      alert(`Missing: ${missing.join(', ')}`);
+      return;
+    }
+
+    let team1Fair = null;
+    let team2Fair = null;
+
+    if (features.includes('team1_moneyline') && features.includes('team2_moneyline')) {
+      const ml1 = parseFloat(matchupInputs['team1_moneyline']);
+      const ml2 = parseFloat(matchupInputs['team2_moneyline']);
+      const p1 = moneylineToFairProb(ml1);
+      const p2 = moneylineToFairProb(ml2);
+      const novig = removeVig(p1, p2);
+      team1Fair = novig.p1;
+      team2Fair = novig.p2;
+    }
+
+    const raw = features.map((f) => {
+      if (f === 'team1_moneyline' && team1Fair !== null) return team1Fair;
+      if (f === 'team2_moneyline' && team2Fair !== null) return team2Fair;
+      const val = parseFloat(matchupInputs[f]);
+      return Number.isFinite(val) ? val : 0;
+    });
+
+    const xNorm = raw.map((v, j) => (v - means[j]) / stds[j]);
+    const z = bias + weights.reduce((s, w, j) => s + w * xNorm[j], 0);
+    const p = sigmoid(z);
+
+    const t1Prob = p;
+    const t2Prob = 1 - p;
+
+    setPrediction({
+      team1_win_prob: (t1Prob * 100).toFixed(1),
+      team2_win_prob: (t2Prob * 100).toFixed(1),
+      team1_implied_line: probToMoneyline(t1Prob),
+      team2_implied_line: probToMoneyline(t2Prob),
+      confidence: (Math.abs(p - 0.5) * 200).toFixed(1),
+    });
+
+    if (actualML1 && actualML2) {
+      const ml1 = parseFloat(actualML1);
+      const ml2 = parseFloat(actualML2);
+      if (!Number.isNaN(ml1) && !Number.isNaN(ml2)) {
+        calculateEV(p, ml1, ml2);
+      }
+    }
+  };
+
+  const downloadModelReport = () => {
+    if (!modelTrained || !trainingStats || !featureImportance) return;
+
+    const lines = [
+      `=== ${sports[selectedSport].name} PRO MODEL REPORT ===`,
+      `Trained on: ${trainingStats.samplesUsed} games`,
+      `Accuracy: ${trainingStats.accuracy}%`,
+      '',
+      'Top Features:',
+      ...featureImportance
+        .slice(0, 5)
+        .map((f, i) => `${i + 1}. ${f.feature.replace(/_/g, ' ')} → ${f.weight.toFixed(3)}`),
+      '',
+      'Model is ready for live betting (simulation / educational use only).',
+      `Generated: ${new Date().toLocaleString()}`,
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedSport}_model_report.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
-        <div className="bg-slate-800/60 backdrop-blur-xl rounded-2xl shadow-2xl border border-slate-700 p-8">
-          <div className="flex items-center justify-between mb-8">
-            <h1 className="text-4xl font-bold text-white flex items-center gap-4">
-              <TrendingUp className="text-green-400" size={40} />
-              SharpTracker Pro
-            </h1>
-            <select
-              value={selectedSport}
-              onChange={(e) => setSelectedSport(e.target.value as Sport)}
-              className="bg-slate-700 text-white px-4 py-3 rounded-lg text-lg font-medium flex items-center gap-2"
-            >
-              {SPORTS.map(s => {
-                const Icon = s.icon;
-                return <option key={s.value} value={s.value} className="flex items-center gap-2">
-                  <Icon size={18} /> {s.label}
-                </option>;
-              })}
-            </select>
-          </div>
-
-          {/* Stats */}
-          {stats.total > 0 && (
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-8">
-              <div className="bg-green-900/40 border border-green-700 rounded-lg p-4">
-                <div className="text-green-400 text-2xl font-bold">{stats.wins}-{stats.losses}-{stats.pushes}</div>
-                <div className="text-slate-300 text-sm">Record</div>
-              </div>
-              <div className="bg-blue-900/40 border border-blue-700 rounded-lg p-4">
-                <div className="text-blue-400 text-2xl font-bold">{stats.total} bets</div>
-                <div className="text-slate-300 text-sm">Total</div>
-              </div>
-              <div className="bg-emerald-900/40 border border-emerald-700 rounded-lg p-4">
-                <div className={`text-2xl font-bold ${parseFloat(stats.profit) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  ${stats.profit}
-                </div>
-                <div className="text-slate-300 text-sm">P/L</div>
-              </div>
-              <div className="bg-purple-900/40 border border-purple-700 rounded-lg p-4">
-                <div className={`text-2xl font-bold ${parseFloat(stats.roi) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {stats.roi}%
-                </div>
-                <div className="text-slate-300 text-sm">ROI</div>
+        <div className="bg-black/40 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/10 overflow-hidden">
+          <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-8">
+            <div className="flex items-center gap-4">
+              <Sparkles className="w-12 h-12 text-yellow-300" />
+              <div>
+                <h1 className="text-4xl md:text-5xl font-bold text-white">
+                  Pro Sports Prediction Model
+                </h1>
+                <p className="text-blue-100 mt-2">
+                  No-Vig • +EV Detection • Append Mode • Feature Importance
+                </p>
               </div>
             </div>
-          )}
-
-          {/* Controls */}
-          <div className="flex flex-wrap gap-4 mb-6">
-            <button onClick={addGame} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition">
-              + Add Bet
-            </button>
-            <label className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg cursor-pointer transition flex items-center gap-2">
-              <Upload size={20} /> Upload CSV
-              <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" />
-            </label>
-            <button onClick={downloadTemplate} className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg transition flex items-center gap-2">
-              <Download size={20} /> Template
-            </button>
-            {games.length > 0 && (
-              <button onClick={clearAll} className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg transition flex items-center gap-2">
-                <Trash2 size={20} /> Clear All
-              </button>
-            )}
           </div>
 
-          <div className="bg-blue-900/30 border border-blue-700 rounded-lg p-4 mb-6 flex gap-3 items-start">
-            <AlertCircle className="text-blue-400 mt-0.5" />
-            <div className="text-blue-200 text-sm">
-              <strong>New:</strong> Multi-sport support • Tennis/Table Tennis auto-handled • Robust CSV parsing • ROI tracking • Last 5 calculated automatically
+          <div className="p-6 md:p-10 space-y-10">
+            <div className="grid grid-cols-3 md:grid-cols-5 gap-4">
+              {Object.entries(sports).map(([key, s]) => (
+                <button
+                  key={key}
+                  onClick={() => setSelectedSport(key)}
+                  className={`py-4 px-6 rounded-2xl font-bold text-lg transition-all ${
+                    selectedSport === key
+                      ? 'bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-xl scale-105'
+                      : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                  }`}
+                >
+                  {s.name}
+                </button>
+              ))}
             </div>
-          </div>
 
-          {/* Games List */}
-          <div className="space-y-4">
-            {filteredGames.length === 0 ? (
-              <div className="text-center py-20 text-slate-400">
-                <p className="text-2xl mb-4">No bets in {SPORTS.find(s => s.value === selectedSport)?.label} yet</p>
-                <p>Add one or upload a season CSV</p>
-              </div>
-            ) : (
-              filteredGames
-                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                .map(game => {
-                  const result = calculateResult(game);
-                  const homeProb = moneylineToProb(game.homeMoneyline);
-                  const awayProb = moneylineToProb(game.awayMoneyline);
+            <div className="grid lg:grid-cols-2 gap-8">
+              <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
+                <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
+                  <Database className="text-blue-400" /> Training Data
+                </h2>
 
-                  return (
-                    <div key={game.id} className="bg-slate-700/50 rounded-xl p-6 border border-slate-600 hover:border-slate-500 transition">
-                      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-                        <div>
-                          <label className="text-xs text-slate-400">Date</label>
-                          <input type="date" value={game.date} onChange={e => updateGame(game.id, 'date', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded" />
-                        </div>
+                <div className="mb-6 flex items-center gap-3 p-4 bg-blue-500/10 rounded-xl border border-blue-400/30">
+                  <input
+                    id="append-mode"
+                    type="checkbox"
+                    checked={appendMode}
+                    onChange={(e) => setAppendMode(e.target.checked)}
+                    className="w-5 h-5 rounded accent-blue-500 cursor-pointer"
+                  />
+                  <label htmlFor="append-mode" className="text-white font-semibold cursor-pointer flex-1">
+                    📎 Append to existing {trainingData.length} games (don't replace)
+                  </label>
+                </div>
 
-                        <div className="md:col-span-2">
-                          <label className="text-xs text-slate-400">Home</label>
-                          <input type="text" value={game.homeTeam} onChange={e => updateGame(game.id, 'homeTeam', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded" />
-                          {game.homeLast5 && <div className="text-xs text-cyan-400 mt-1">L5: {game.homeLast5}</div>}
-                        </div>
+                <label className="block cursor-pointer">
+                  <div className="border-2 border-dashed border-white/30 rounded-2xl p-10 text-center hover:border-blue-400 transition-all">
+                    <Upload className="w-16 h-16 text-blue-400 mx-auto mb-4" />
+                    <p className="text-xl font-bold text-white">Upload CSV</p>
+                    <p className="text-sm text-gray-400 mt-2">
+                      {appendMode ? 'Will add to existing data' : 'Will replace current data'}
+                    </p>
+                    {fileName && <p className="text-sm text-gray-400 mt-2">{fileName}</p>}
+                    <input type="file" accept=".csv" onChange={handleDataUpload} className="hidden" />
+                  </div>
+                </label>
 
-                        <div className="md:col-span-2">
-                          <label className="text-xs text-slate-400">Away</label>
-                          <input type="text" value={game.awayTeam} onChange={e => updateGame(game.id, 'awayTeam', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded" />
-                          {game.awayLast5 && <div className="text-xs text-cyan-400 mt-1">L5: {game.awayLast5}</div>}
-                        </div>
+                {trainingData.length > 0 && (
+                  <div className="mt-6 p-6 bg-green-500/20 rounded-xl border border-green-400/40">
+                    <p className="text-green-300 text-lg font-bold">
+                      Loaded {trainingData.length} games
+                    </p>
+                    {trainingStats && (
+                      <p className="text-sm mt-2 text-green-200">
+                        Accuracy: <strong>{trainingStats.accuracy}%</strong> on{' '}
+                        {trainingStats.samplesUsed} clean games
+                      </p>
+                    )}
+                  </div>
+                )}
 
-                        <div>
-                          <label className="text-xs text-slate-400">H ML</label>
-                          <input type="text" value={game.homeMoneyline} onChange={e => updateGame(game.id, 'homeMoneyline', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded text-sm" />
-                          <div className="text-xs text-green-400">{homeProb}%</div>
-                        </div>
+                <button
+                  onClick={trainModel}
+                  disabled={isTraining || trainingData.length === 0}
+                  className="w-full mt-6 bg-gradient-to-r from-emerald-500 to-blue-600 text-white py-5 rounded-2xl font-bold text-xl hover:shadow-2xl transition-all disabled:opacity-50"
+                >
+                  {isTraining ? 'Training Pro Model...' : 'Train Pro Model'}
+                </button>
 
-                        <div>
-                          <label className="text-xs text-slate-400">A ML</label>
-                          <input type="text" value={game.awayMoneyline} onChange={e => updateGame(game.id, 'awayMoneyline', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded text-sm" />
-                          <div className="text-xs text-green-400">{awayProb}%</div>
-                        </div>
-
-                        {!isTennisLike(game.sport) && (
-                          <div>
-                            <label className="text-xs text-slate-400">Spread</label>
-                            <input type="text" value={game.spread || ''} onChange={e => updateGame(game.id, 'spread', e.target.value)}
-                              className="w-full bg-slate-600 text-white px-3 py-2 rounded text-sm" />
+                {modelTrained && (
+                  <div className="mt-6 p-6 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-xl border border-blue-400/40">
+                    <p className="text-blue-300 font-bold text-lg">Pro Model Ready</p>
+                    {featureImportance && (
+                      <div className="mt-4 space-y-2">
+                        <p className="text-sm text-blue-200">Top Features:</p>
+                        {featureImportance.slice(0, 4).map((f, i) => (
+                          <div key={i} className="flex justify-between text-sm">
+                            <span className="text-blue-100">
+                              {i + 1}. {f.feature.replace(/_/g, ' ')}
+                            </span>
+                            <span className="font-mono text-blue-300">{f.weight.toFixed(3)}</span>
                           </div>
-                        )}
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
-                        <div>
-                          <label className="text-xs text-slate-400">H Score</label>
-                          <input type="text" value={game.homeScore || ''} onChange={e => updateGame(game.id, 'homeScore', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded font-mono" />
+              <div className="space-y-6">
+                <div className="bg-white/5 rounded-2xl p-6 border border-white/10">
+                  <h3 className="text-xl font-bold text-white mb-4">Quick Actions</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      onClick={downloadTemplate}
+                      className="bg-white/10 hover:bg-white/20 py-4 rounded-xl text-white font-semibold"
+                    >
+                      Template
+                    </button>
+                    <button
+                      onClick={exportTrainingData}
+                      className="bg-white/10 hover:bg-white/20 py-4 rounded-xl text-white font-semibold"
+                    >
+                      Export Data
+                    </button>
+                    <button
+                      onClick={importSavedData}
+                      className="bg-white/10 hover:bg-white/20 py-4 rounded-xl text-white font-semibold"
+                    >
+                      Load Saved
+                    </button>
+                    <button
+                      onClick={clearSportData}
+                      className="bg-red-500/20 hover:bg-red-500/30 border border-red-400/50 py-4 rounded-xl text-red-300 font-semibold"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                  {modelTrained && (
+                    <button
+                      onClick={downloadModelReport}
+                      className="w-full mt-4 bg-gradient-to-r from-yellow-500 to-orange-500 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3"
+                    >
+                      <Download className="w-5 h-5" /> Download Model Report
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {modelTrained && (
+              <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
+                <h2 className="text-3xl font-bold text-white mb-8 flex items-center gap-4">
+                  <Target className="text-purple-400" /> Predict Matchup + Find +EV
+                </h2>
+
+                <div className="grid lg:grid-cols-4 gap-6 mb-8">
+                  {sports[selectedSport].features.map((f) => (
+                    <div key={f}>
+                      <label className="block text-sm font-bold text-gray-300 mb-2">
+                        {f.replace(/_/g, ' ').toUpperCase()}
+                      </label>
+                      <input
+                        type="number"
+                        step={f.includes('last5') ? '0.01' : '1'}
+                        value={matchupInputs[f] || ''}
+                        onChange={(e) =>
+                          setMatchupInputs((p) => ({
+                            ...p,
+                            [f]: e.target.value,
+                          }))
+                        }
+                        className="w-full bg-white/10 border border-white/20 rounded-xl px-5 py-4 text-white placeholder-gray-500 focus:border-blue-400 focus:outline-none"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                  <div>
+                    <label className="block text-sm font-bold text-yellow-300 mb-2">
+                      Actual Sportsbook ML (Team 1)
+                    </label>
+                    <input
+                      type="number"
+                      value={actualML1}
+                      onChange={(e) => setActualML1(e.target.value)}
+                      placeholder="-150"
+                      className="w-full bg-yellow-500/10 border border-yellow-400/50 rounded-xl px-5 py-4 text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-yellow-300 mb-2">
+                      Actual Sportsbook ML (Team 2)
+                    </label>
+                    <input
+                      type="number"
+                      value={actualML2}
+                      onChange={(e) => setActualML2(e.target.value)}
+                      placeholder="+130"
+                      className="w-full bg-yellow-500/10 border border-yellow-400/50 rounded-xl px-5 py-4 text-white"
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={calculatePrediction}
+                      className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-5 rounded-2xl font-bold text-xl hover:shadow-2xl transition-all"
+                    >
+                      Predict + Find Edge
+                    </button>
+                  </div>
+                </div>
+
+                {prediction && (
+                  <div className="space-y-8">
+                    <div className="grid md:grid-cols-2 gap-8">
+                      <div className="bg-gradient-to-br from-blue-600/30 to-blue-800/30 rounded-2xl p-8 border border-blue-400/50">
+                        <h3 className="text-2xl font-bold text-blue-300 mb-6">Team 1</h3>
+                        <div className="text-5xl font-bold text-white mb-4">
+                          {prediction.team1_win_prob}%
                         </div>
-
-                        <div>
-                          <label className="text-xs text-slate-400">A Score</label>
-                          <input type="text" value={game.awayScore || ''} onChange={e => updateGame(game.id, 'awayScore', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded font-mono" />
+                        <div className="text-3xl font-bold text-blue-400">
+                          {formatMoneyline(prediction.team1_implied_line)}
                         </div>
-
-                        <div>
-                          <label className="text-xs text-slate-400">Bet</label>
-                          <input type="text" value={game.bet} onChange={e => updateGame(game.id, 'bet', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded" />
-                          {result && (
-                            <div className={`text-sm font-bold mt-1 ${
-                              result.result === 'win' ? 'text-green-400' :
-                              result.result === 'loss' ? 'text-red-400' : 'text-yellow-400'
-                            }`}>
-                              {result.result === 'win' ? 'WIN' : result.result === 'loss' ? 'LOSS' : 'PUSH'}
-                            </div>
-                          )}
+                      </div>
+                      <div className="bg-gradient-to-br from-purple-600/30 to-pink-600/30 rounded-2xl p-8 border border-purple-400/50">
+                        <h3 className="text-2xl font-bold text-purple-300 mb-6">Team 2</h3>
+                        <div className="text-5xl font-bold text-white mb-4">
+                          {prediction.team2_win_prob}%
                         </div>
-
-                        <div>
-                          <label className="text-xs text-slate-400">Amount</label>
-                          <input type="text" value={game.betAmount} onChange={e => updateGame(game.id, 'betAmount', e.target.value)}
-                            className="w-full bg-slate-600 text-white px-3 py-2 rounded" />
-                          {result && result.profit !== 0 && (
-                            <div className={`text-sm font-bold mt-1 ${result.profit > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              ${result.profit.toFixed(2)}
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex items-end">
-                          <button onClick={() => deleteGame(game.id)}
-                            className="bg-red-600/20 hover:bg-red-600/40 text-red-400 p-3 rounded-lg transition">
-                            <Trash2 size={18} />
-                          </button>
+                        <div className="text-3xl font-bold text-purple-400">
+                          {formatMoneyline(prediction.team2_implied_line)}
                         </div>
                       </div>
                     </div>
-                  );
-                })
+
+                    {evResult && (
+                      <div
+                        className={`p-8 rounded-2xl border-4 ${
+                          parseFloat(evResult.bestEV) > 5
+                            ? 'bg-green-600/30 border-green-500'
+                            : 'bg-red-600/20 border-red-500'
+                        }`}
+                      >
+                        <h3 className="text-3xl font-bold text-white mb-4">
+                          {parseFloat(evResult.bestEV) > 5 ? 'STRONG +EV DETECTED' : 'No Edge Found'}
+                        </h3>
+                        <p className="text-5xl font-bold text-white">
+                          {evResult.side === 'Team 1' ? 'BET TEAM 1' : 'BET TEAM 2'} → +
+                          {evResult.bestEV}% EV
+                        </p>
+                        <p className="text-xl text-gray-300 mt-4">
+                          Bet $100 → Expected Profit:{' '}
+                          <strong className="text-green-400">
+                            ${parseFloat(evResult.bestEV).toFixed(1)}
+                          </strong>
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-yellow-400">
+                        Model Confidence: {prediction.confidence}%
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -458,4 +1035,4 @@ tennis,2025-01-02,Alcaraz,Sinner,-220,+180,,,2,1,Sinner,50`;
   );
 };
 
-export default SportsBettingTracker;
+export default SportsPredictionModel;
