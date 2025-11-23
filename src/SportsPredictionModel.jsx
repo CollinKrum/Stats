@@ -22,6 +22,12 @@ const SportsPredictionModel = () => {
   const [matchupInputs, setMatchupInputs] = useState({});
   const [actualML1, setActualML1] = useState('');
   const [actualML2, setActualML2] = useState('');
+  const [actualSpread, setActualSpread] = useState('');
+  const [actualSpreadOdds1, setActualSpreadOdds1] = useState('');
+  const [actualSpreadOdds2, setActualSpreadOdds2] = useState('');
+  const [actualTotal, setActualTotal] = useState('');
+  const [actualOverOdds, setActualOverOdds] = useState('');
+  const [actualUnderOdds, setActualUnderOdds] = useState('');
   const [evResult, setEvResult] = useState(null);
   const [fileName, setFileName] = useState('');
   const [isTraining, setIsTraining] = useState(false);
@@ -34,21 +40,29 @@ const SportsPredictionModel = () => {
       name: 'NFL',
       features: ['team1_moneyline', 'team2_moneyline', 'team1_last5', 'team2_last5'],
       isTeamSeasonSport: true,
+      supportsSpread: true,
+      supportsTotal: true,
     },
     ncaaf: {
       name: 'NCAAF',
       features: ['team1_moneyline', 'team2_moneyline', 'team1_last5', 'team2_last5'],
       isTeamSeasonSport: true,
+      supportsSpread: true,
+      supportsTotal: true,
     },
     ncaab: {
       name: 'NCAAB',
       features: ['team1_moneyline', 'team2_moneyline', 'team1_last5', 'team2_last5'],
       isTeamSeasonSport: true,
+      supportsSpread: true,
+      supportsTotal: true,
     },
     nba: {
       name: 'NBA',
       features: ['team1_moneyline', 'team2_moneyline', 'team1_last5', 'team2_last5'],
       isTeamSeasonSport: true,
+      supportsSpread: true,
+      supportsTotal: true,
     },
     tennis: {
       name: 'Tennis',
@@ -62,6 +76,8 @@ const SportsPredictionModel = () => {
         'fatigue_factor',
       ],
       isTeamSeasonSport: false,
+      supportsSpread: false,
+      supportsTotal: false,
     },
     table_tennis: {
       name: 'Table Tennis',
@@ -74,6 +90,8 @@ const SportsPredictionModel = () => {
         'tournament_level',
       ],
       isTeamSeasonSport: false,
+      supportsSpread: false,
+      supportsTotal: false,
     },
   };
 
@@ -392,6 +410,12 @@ const SportsPredictionModel = () => {
     setMatchupInputs({});
     setActualML1('');
     setActualML2('');
+    setActualSpread('');
+    setActualSpreadOdds1('');
+    setActualSpreadOdds2('');
+    setActualTotal('');
+    setActualOverOdds('');
+    setActualUnderOdds('');
     setFileName('');
 
     try {
@@ -407,7 +431,7 @@ const SportsPredictionModel = () => {
     let baseCols = [];
 
     if (sportDef.isTeamSeasonSport) {
-      baseCols = ['date', 'team1', 'team2', 'team1_moneyline', 'team2_moneyline', 'spread', 'home_final_score', 'away_final_score'];
+      baseCols = ['week', 'year', 'team1', 'team2', 'team1_moneyline', 'team2_moneyline', 'spread', 'total', 'home_final_score', 'away_final_score'];
     } else if (selectedSport === 'tennis') {
       baseCols = [
         'player1',
@@ -444,8 +468,10 @@ const SportsPredictionModel = () => {
         if (c === 'surface') return 'hard';
         if (c === 'tournament_level') return '250';
         if (c === 'spread') return '-3.5';
+        if (c === 'total') return '47.5';
         if (c.includes('score')) return '110';
-        if (c === 'date') return '2024-01-15';
+        if (c === 'week') return '1';
+        if (c === 'year') return '2024';
         if (c === 'team1' || c === 'player1') return 'TeamA';
         if (c === 'team2' || c === 'player2') return 'TeamB';
         return '';
@@ -553,12 +579,73 @@ const SportsPredictionModel = () => {
     const bestEV = Math.max(ev1, ev2);
     const side = ev1 > ev2 ? 'Team 1' : 'Team 2';
 
-    setEvResult({
+    return {
       ev1: ev1.toFixed(1),
       ev2: ev2.toFixed(1),
       bestEV: bestEV.toFixed(1),
       side,
-    });
+      marketType: 'moneyline'
+    };
+  };
+
+  const calculateSpreadEV = (team1WinProb, spread, odds1, odds2) => {
+    const spreadMagnitude = Math.abs(parseFloat(spread));
+    
+    let team1CoverProb;
+    if (spread < 0) {
+      team1CoverProb = team1WinProb * (0.85 - spreadMagnitude * 0.02);
+    } else {
+      team1CoverProb = team1WinProb + (1 - team1WinProb) * (spreadMagnitude * 0.05);
+    }
+    
+    team1CoverProb = Math.max(0.1, Math.min(0.9, team1CoverProb));
+    const team2CoverProb = 1 - team1CoverProb;
+
+    const payout1 = odds1 > 0 ? odds1 / 100 + 1 : 1 + 100 / Math.abs(odds1);
+    const payout2 = odds2 > 0 ? odds2 / 100 + 1 : 1 + 100 / Math.abs(odds2);
+
+    const ev1 = (team1CoverProb * payout1 - (1 - team1CoverProb)) * 100;
+    const ev2 = (team2CoverProb * payout2 - (1 - team2CoverProb)) * 100;
+
+    const bestEV = Math.max(ev1, ev2);
+    const side = ev1 > ev2 ? `Team 1 ${spread}` : `Team 2 ${-spread}`;
+
+    return {
+      ev1: ev1.toFixed(1),
+      ev2: ev2.toFixed(1),
+      bestEV: bestEV.toFixed(1),
+      side,
+      marketType: 'spread',
+      team1CoverProb: (team1CoverProb * 100).toFixed(1),
+      team2CoverProb: (team2CoverProb * 100).toFixed(1)
+    };
+  };
+
+  const calculateTotalEV = (team1WinProb, total, overOdds, underOdds) => {
+    const expectedTotal = parseFloat(total);
+    
+    const scoringFactor = 0.45 + (team1WinProb * 0.1);
+    const overProb = Math.max(0.3, Math.min(0.7, scoringFactor));
+    const underProb = 1 - overProb;
+
+    const payoutOver = overOdds > 0 ? overOdds / 100 + 1 : 1 + 100 / Math.abs(overOdds);
+    const payoutUnder = underOdds > 0 ? underOdds / 100 + 1 : 1 + 100 / Math.abs(underOdds);
+
+    const evOver = (overProb * payoutOver - (1 - overProb)) * 100;
+    const evUnder = (underProb * payoutUnder - (1 - underProb)) * 100;
+
+    const bestEV = Math.max(evOver, evUnder);
+    const side = evOver > evUnder ? `Over ${total}` : `Under ${total}`;
+
+    return {
+      evOver: evOver.toFixed(1),
+      evUnder: evUnder.toFixed(1),
+      bestEV: bestEV.toFixed(1),
+      side,
+      marketType: 'total',
+      overProb: (overProb * 100).toFixed(1),
+      underProb: (underProb * 100).toFixed(1)
+    };
   };
 
   const calculatePrediction = () => {
@@ -612,13 +699,38 @@ const SportsPredictionModel = () => {
       confidence: (Math.abs(p - 0.5) * 200).toFixed(1),
     });
 
+    const allResults = [];
+
     if (actualML1 && actualML2) {
       const ml1 = parseFloat(actualML1);
       const ml2 = parseFloat(actualML2);
       if (!Number.isNaN(ml1) && !Number.isNaN(ml2)) {
-        calculateEV(p, ml1, ml2);
+        const mlResult = calculateEV(p, ml1, ml2);
+        allResults.push(mlResult);
       }
     }
+
+    if (sports[selectedSport].supportsSpread && actualSpread && actualSpreadOdds1 && actualSpreadOdds2) {
+      const spread = parseFloat(actualSpread);
+      const odds1 = parseFloat(actualSpreadOdds1);
+      const odds2 = parseFloat(actualSpreadOdds2);
+      if (!Number.isNaN(spread) && !Number.isNaN(odds1) && !Number.isNaN(odds2)) {
+        const spreadResult = calculateSpreadEV(p, spread, odds1, odds2);
+        allResults.push(spreadResult);
+      }
+    }
+
+    if (sports[selectedSport].supportsTotal && actualTotal && actualOverOdds && actualUnderOdds) {
+      const total = parseFloat(actualTotal);
+      const overOdds = parseFloat(actualOverOdds);
+      const underOdds = parseFloat(actualUnderOdds);
+      if (!Number.isNaN(total) && !Number.isNaN(overOdds) && !Number.isNaN(underOdds)) {
+        const totalResult = calculateTotalEV(p, total, overOdds, underOdds);
+        allResults.push(totalResult);
+      }
+    }
+
+    setEvResult(allResults.length > 0 ? allResults : null);
   };
 
   const downloadModelReport = () => {
@@ -689,6 +801,8 @@ const SportsPredictionModel = () => {
                 <strong>🎯 Auto-Detection:</strong> Winner determined from final scores + spread (negative = home favored).
                 <br />
                 <strong>📊 Last 5 calculated automatically</strong> for chronological season uploads.
+                <br />
+                <strong>💰 Multi-Market EV:</strong> Find edges in moneyline, spread, and totals all at once!
               </div>
             </div>
 
@@ -828,10 +942,13 @@ const SportsPredictionModel = () => {
                   ))}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+                  <div className="col-span-full">
+                    <h3 className="text-xl font-bold text-yellow-300 mb-4">💰 Moneyline Odds</h3>
+                  </div>
                   <div>
                     <label className="block text-sm font-bold text-yellow-300 mb-2">
-                      Actual Sportsbook ML (Team 1)
+                      Sportsbook ML (Team 1)
                     </label>
                     <input
                       type="number"
@@ -843,7 +960,7 @@ const SportsPredictionModel = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-yellow-300 mb-2">
-                      Actual Sportsbook ML (Team 2)
+                      Sportsbook ML (Team 2)
                     </label>
                     <input
                       type="number"
@@ -853,12 +970,104 @@ const SportsPredictionModel = () => {
                       className="w-full bg-yellow-500/10 border border-yellow-400/50 rounded-xl px-5 py-4 text-white"
                     />
                   </div>
-                  <div className="flex items-end">
+                  <div />
+
+                  {sports[selectedSport].supportsSpread && (
+                    <>
+                      <div className="col-span-full mt-4">
+                        <h3 className="text-xl font-bold text-green-300 mb-4">📊 Spread</h3>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-green-300 mb-2">
+                          Spread (Team 1)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          value={actualSpread}
+                          onChange={(e) => setActualSpread(e.target.value)}
+                          placeholder="-3.5"
+                          className="w-full bg-green-500/10 border border-green-400/50 rounded-xl px-5 py-4 text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-green-300 mb-2">
+                          Spread Odds (Team 1)
+                        </label>
+                        <input
+                          type="number"
+                          value={actualSpreadOdds1}
+                          onChange={(e) => setActualSpreadOdds1(e.target.value)}
+                          placeholder="-110"
+                          className="w-full bg-green-500/10 border border-green-400/50 rounded-xl px-5 py-4 text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-green-300 mb-2">
+                          Spread Odds (Team 2)
+                        </label>
+                        <input
+                          type="number"
+                          value={actualSpreadOdds2}
+                          onChange={(e) => setActualSpreadOdds2(e.target.value)}
+                          placeholder="-110"
+                          className="w-full bg-green-500/10 border border-green-400/50 rounded-xl px-5 py-4 text-white"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {sports[selectedSport].supportsTotal && (
+                    <>
+                      <div className="col-span-full mt-4">
+                        <h3 className="text-xl font-bold text-blue-300 mb-4">🎯 Total (Over/Under)</h3>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-blue-300 mb-2">
+                          Total Line
+                        </label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          value={actualTotal}
+                          onChange={(e) => setActualTotal(e.target.value)}
+                          placeholder="47.5"
+                          className="w-full bg-blue-500/10 border border-blue-400/50 rounded-xl px-5 py-4 text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-blue-300 mb-2">
+                          Over Odds
+                        </label>
+                        <input
+                          type="number"
+                          value={actualOverOdds}
+                          onChange={(e) => setActualOverOdds(e.target.value)}
+                          placeholder="-110"
+                          className="w-full bg-blue-500/10 border border-blue-400/50 rounded-xl px-5 py-4 text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-bold text-blue-300 mb-2">
+                          Under Odds
+                        </label>
+                        <input
+                          type="number"
+                          value={actualUnderOdds}
+                          onChange={(e) => setActualUnderOdds(e.target.value)}
+                          placeholder="-110"
+                          className="w-full bg-blue-500/10 border border-blue-400/50 rounded-xl px-5 py-4 text-white"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <div className="col-span-full flex items-end">
                     <button
                       onClick={calculatePrediction}
                       className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-5 rounded-2xl font-bold text-xl hover:shadow-2xl transition-all"
                     >
-                      Predict + Find Edge
+                      Predict + Find All Edges
                     </button>
                   </div>
                 </div>
@@ -887,26 +1096,63 @@ const SportsPredictionModel = () => {
                     </div>
 
                     {evResult && (
-                      <div
-                        className={`p-8 rounded-2xl border-4 ${
-                          parseFloat(evResult.bestEV) > 5
-                            ? 'bg-green-600/30 border-green-500'
-                            : 'bg-red-600/20 border-red-500'
-                        }`}
-                      >
-                        <h3 className="text-3xl font-bold text-white mb-4">
-                          {parseFloat(evResult.bestEV) > 5 ? 'STRONG +EV DETECTED' : 'No Edge Found'}
-                        </h3>
-                        <p className="text-5xl font-bold text-white">
-                          {evResult.side === 'Team 1' ? 'BET TEAM 1' : 'BET TEAM 2'} → +
-                          {evResult.bestEV}% EV
-                        </p>
-                        <p className="text-xl text-gray-300 mt-4">
-                          Bet $100 → Expected Profit:{' '}
-                          <strong className="text-green-400">
-                            ${parseFloat(evResult.bestEV).toFixed(1)}
-                          </strong>
-                        </p>
+                      <div className="space-y-6">
+                        {evResult.map((result, idx) => (
+                          <div
+                            key={idx}
+                            className={`p-8 rounded-2xl border-4 ${
+                              parseFloat(result.bestEV) > 5
+                                ? 'bg-green-600/30 border-green-500'
+                                : parseFloat(result.bestEV) > 0
+                                ? 'bg-yellow-600/20 border-yellow-500'
+                                : 'bg-red-600/20 border-red-500'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3 mb-4">
+                              <span className="text-2xl">
+                                {result.marketType === 'moneyline' && '💰'}
+                                {result.marketType === 'spread' && '📊'}
+                                {result.marketType === 'total' && '🎯'}
+                              </span>
+                              <h3 className="text-2xl font-bold text-white uppercase">
+                                {result.marketType} Market
+                              </h3>
+                            </div>
+
+                            <h4 className="text-3xl font-bold text-white mb-2">
+                              {parseFloat(result.bestEV) > 5
+                                ? '✅ STRONG +EV DETECTED'
+                                : parseFloat(result.bestEV) > 0
+                                ? '⚠️ SLIGHT EDGE'
+                                : '❌ NO EDGE'}
+                            </h4>
+
+                            <p className="text-5xl font-bold text-white mb-4">
+                              {result.side} → {parseFloat(result.bestEV) > 0 ? '+' : ''}{result.bestEV}% EV
+                            </p>
+
+                            {result.marketType === 'spread' && (
+                              <div className="text-lg text-gray-300 mb-2">
+                                <p>Team 1 Cover Probability: <strong className="text-blue-400">{result.team1CoverProb}%</strong></p>
+                                <p>Team 2 Cover Probability: <strong className="text-purple-400">{result.team2CoverProb}%</strong></p>
+                              </div>
+                            )}
+
+                            {result.marketType === 'total' && (
+                              <div className="text-lg text-gray-300 mb-2">
+                                <p>Over Probability: <strong className="text-orange-400">{result.overProb}%</strong></p>
+                                <p>Under Probability: <strong className="text-cyan-400">{result.underProb}%</strong></p>
+                              </div>
+                            )}
+
+                            <p className="text-xl text-gray-300 mt-4">
+                              Bet $100 → Expected Value:{' '}
+                              <strong className={parseFloat(result.bestEV) > 0 ? 'text-green-400' : 'text-red-400'}>
+                                ${parseFloat(result.bestEV).toFixed(1)}
+                              </strong>
+                            </p>
+                          </div>
+                        ))}
                       </div>
                     )}
 
@@ -926,4 +1172,4 @@ const SportsPredictionModel = () => {
   );
 };
 
-export default SportsPredictionModel
+export default SportsPredictionModel;
