@@ -100,6 +100,12 @@ const SportsPredictionModel = () => {
   }, [selectedSport]);
 
   const loadSaved = async () => {
+    // Check if storage is available
+    if (!window.storage) {
+      console.log('Storage not available - data will not persist between sessions');
+      return;
+    }
+
     try {
       const tdResult = await window.storage.get(`training-${selectedSport}`, false);
       if (tdResult && tdResult.value) {
@@ -356,7 +362,10 @@ const SportsPredictionModel = () => {
       setPrediction(null);
       setEvResult(null);
 
-      await window.storage.set(`training-${selectedSport}`, JSON.stringify(finalRows), false);
+      // Only save if storage is available
+      if (window.storage) {
+        await window.storage.set(`training-${selectedSport}`, JSON.stringify(finalRows), false);
+      }
 
       alert(
         appendMode
@@ -418,11 +427,14 @@ const SportsPredictionModel = () => {
     setActualUnderOdds('');
     setFileName('');
 
-    try {
-      await window.storage.delete(`training-${selectedSport}`, false);
-      await window.storage.delete(`model-${selectedSport}`, false);
-    } catch (e) {
-      console.warn('Failed to clear storage', e);
+    // Only clear storage if available
+    if (window.storage) {
+      try {
+        await window.storage.delete(`training-${selectedSport}`, false);
+        await window.storage.delete(`model-${selectedSport}`, false);
+      } catch (e) {
+        console.warn('Failed to clear storage', e);
+      }
     }
   };
 
@@ -551,11 +563,14 @@ const SportsPredictionModel = () => {
       setTrainingStats(stats);
       setFeatureImportance(importance);
 
-      await window.storage.set(
-        `model-${selectedSport}`,
-        JSON.stringify({ modelParams: model, trainingStats: stats }),
-        false
-      );
+      // Only save if storage is available
+      if (window.storage) {
+        await window.storage.set(
+          `model-${selectedSport}`,
+          JSON.stringify({ modelParams: model, trainingStats: stats }),
+          false
+        );
+      }
 
       alert(`PRO MODEL TRAINED — ${samplesUsed} games — ${(accuracy * 100).toFixed(1)}% accuracy`);
     } catch (err) {
@@ -770,7 +785,7 @@ const SportsPredictionModel = () => {
                   Pro Sports Prediction Model
                 </h1>
                 <p className="text-blue-100 mt-2">
-                  Spread Auto-Detection • +EV Finder • Cloud Sync Across Devices
+                  Spread Auto-Detection • +EV Finder • {window.storage ? 'Cloud Sync Across Devices' : 'Session Storage Only'}
                 </p>
               </div>
             </div>
@@ -796,7 +811,15 @@ const SportsPredictionModel = () => {
             <div className="bg-blue-900/30 border border-blue-700/50 rounded-lg p-4 flex gap-3">
               <AlertCircle className="text-blue-400 flex-shrink-0 mt-0.5" size={20} />
               <div className="text-sm text-blue-200">
-                <strong>✨ Syncs across devices!</strong> Upload season data with scores and spreads.
+                {window.storage ? (
+                  <>
+                    <strong>✨ Syncs across devices!</strong> Upload season data with scores and spreads.
+                  </>
+                ) : (
+                  <>
+                    <strong>⚠️ Storage not available:</strong> Data will be lost when you close this tab.
+                  </>
+                )}
                 <br />
                 <strong>🎯 Auto-Detection:</strong> Winner determined from final scores + spread (negative = home favored).
                 <br />
