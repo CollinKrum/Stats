@@ -27,12 +27,18 @@ import {
  * retrieve it later from any device without re‑uploading.
  */
 
-// Base URL for the server API.  You can override this by defining
-// REACT_APP_API_URL in your environment (e.g. when deployed to a hosted
-// backend).  When running locally with the Express server on the same
-// origin as the React app, an empty string will correctly point to
-// `/api/...` routes.
-const API_BASE_URL = process.env.REACT_APP_API_URL || '';
+// Base URL for the server API. When deploying to a hosted backend like Render,
+// set this to your deployed server’s URL so that the React app makes
+// requests to the correct origin. For example, if your backend is deployed at
+// https://stats-4aga.onrender.com, specify that here. You can still
+// override this via an environment variable (e.g. VITE_API_BASE_URL) when
+// configuring your build; otherwise this constant acts as a sensible default.
+// Note: process.env variables are replaced at build time by most bundlers,
+// but if you use Vite, prefer `import.meta.env.VITE_API_BASE_URL` instead.
+const API_BASE_URL =
+  process.env.REACT_APP_API_URL ||
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) ||
+  'https://stats-4aga.onrender.com';
 
 const SportsPredictionModel = () => {
   const [selectedSport, setSelectedSport] = useState('nfl');
