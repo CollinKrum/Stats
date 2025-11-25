@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Upload,
   Database,
@@ -27,12 +27,16 @@ import {
  * retrieve it later from any device without re‑uploading.
  */
 
-// Base URL for the server API.  You can override this by defining
-// REACT_APP_API_URL in your environment (e.g. when deployed to a hosted
-// backend).  When running locally with the Express server on the same
-// origin as the React app, an empty string will correctly point to
-// `/api/...` routes.
-const API_BASE_URL = process.env.REACT_APP_API_URL || '';
+// Base URL for the server API. When deploying to a hosted backend like Render,
+// set this to your deployed server’s URL so that the React app makes
+// requests to the correct origin. You can override this via the environment
+// variables REACT_APP_API_URL (Create React App) or VITE_API_BASE_URL (Vite).
+// If neither environment variable is defined, it falls back to the default
+// Render deployment used by this project.
+const API_BASE_URL =
+  process.env.REACT_APP_API_URL ||
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) ||
+  'https://stats-4aga.onrender.com';
 
 const SportsPredictionModel = () => {
   const [selectedSport, setSelectedSport] = useState('nfl');
@@ -55,6 +59,14 @@ const SportsPredictionModel = () => {
   const [trainingStats, setTrainingStats] = useState(null);
   const [featureImportance, setFeatureImportance] = useState(null);
   const [appendMode, setAppendMode] = useState(false);
+
+  // A ref used to track the latest invocation of loadSaved. Each time
+  // loadSaved is called, this counter increments. When asynchronous
+  // fetches resolve, they compare against this ref to ensure they are
+  // operating on the latest requested sport. This prevents race
+  // conditions where responses from previous sports could overwrite
+  // state after the user has selected a different sport.
+  const loadVersionRef = useRef(0);
 
   // Definition of supported sports.  Each entry defines the display name,
   // which input features are used when training/predicting, and whether
@@ -134,9 +146,10 @@ const SportsPredictionModel = () => {
    * regardless of where they were saved.
    */
   const loadSaved = async () => {
-    // Reset state relevant to predictions and clear any previously loaded data.
-    // Clearing training data and filename here ensures stale data from a different
-    // sport is not displayed while new data is loading.
+    // Increment the load version to guard against stale responses when rapidly switching sports.
+    const loadId = ++loadVersionRef.current;
+
+    // Reset prediction and match-related state, and clear any previously loaded training data and file name.
     setPrediction(null);
     setEvResult(null);
     setMatchupInputs({});
@@ -144,16 +157,17 @@ const SportsPredictionModel = () => {
     setTrainingData([]);
     setFileName('');
 
-    // Flags to track whether data or model was loaded from the server
+    // Flags to indicate whether data/model were loaded from the server.
     let trainingLoadedFromServer = false;
     let modelLoadedFromServer = false;
 
-    // Attempt to load training data from the server
+    // Attempt to fetch training data from the server.
     try {
       const tdRes = await fetch(`${API_BASE_URL}/api/training-data?sport=${selectedSport}`);
       if (tdRes.ok) {
         const tdJson = await tdRes.json();
-        if (Array.isArray(tdJson.rows)) {
+        // Only update if this is the latest load invocation.
+        if (loadVersionRef.current === loadId && Array.isArray(tdJson.rows)) {
           setTrainingData(tdJson.rows);
           setFileName('(loaded from server)');
           trainingLoadedFromServer = true;
@@ -163,36 +177,38 @@ const SportsPredictionModel = () => {
       console.warn('Error loading training data from server:', err);
     }
 
-    // If training data was not found on the server, fall back to local storage
+    // Fallback to local storage if no server data.
     if (!trainingLoadedFromServer && window.storage) {
       try {
         const tdResult = await window.storage.get(`training-${selectedSport}`, false);
         if (tdResult && tdResult.value) {
           const rows = JSON.parse(tdResult.value);
-          setTrainingData(rows);
-          setFileName('(loaded from storage)');
+          if (loadVersionRef.current === loadId) {
+            setTrainingData(rows);
+            setFileName('(loaded from storage)');
+          }
         }
       } catch (err) {
         console.log('No saved data found locally');
       }
     }
 
-    // Reset model-related flags prior to loading
+    // Reset model-related state before loading a model.
     setModelTrained(false);
     setModelParams(null);
     setTrainingStats(null);
     setFeatureImportance(null);
 
-    // Attempt to load model from the server
+    // Attempt to fetch the model from the server.
     try {
       const modelRes = await fetch(`${API_BASE_URL}/api/model?sport=${selectedSport}`);
       if (modelRes.ok) {
         const data = await modelRes.json();
-        if (data.modelParams) {
+        if (loadVersionRef.current === loadId && data.modelParams) {
           setModelParams(data.modelParams);
           setModelTrained(true);
           if (data.trainingStats) setTrainingStats(data.trainingStats);
-          // Compute feature importance from loaded model
+          // Compute feature importance.
           if (data.modelParams.weights && sports[selectedSport]) {
             const { weights } = data.modelParams;
             const feats = data.modelParams.features || sports[selectedSport].features;
@@ -208,24 +224,26 @@ const SportsPredictionModel = () => {
       console.warn('Error loading model from server:', err);
     }
 
-    // If no model loaded from server, attempt to load from local storage
+    // Fallback to local storage if no server model.
     if (!modelLoadedFromServer && window.storage) {
       try {
         const modelResult = await window.storage.get(`model-${selectedSport}`, false);
         if (modelResult && modelResult.value) {
           const data = JSON.parse(modelResult.value);
-          if (data.modelParams) {
-            setModelParams(data.modelParams);
-            setModelTrained(true);
-          }
-          if (data.trainingStats) setTrainingStats(data.trainingStats);
-          // Compute feature importance
-          if (data.modelParams && data.modelParams.weights) {
-            const feats = data.modelParams.features || sports[selectedSport].features;
-            const importance = feats
-              .map((f, i) => ({ feature: f, weight: Math.abs(data.modelParams.weights[i] || 0) }))
-              .sort((a, b) => b.weight - a.weight);
-            setFeatureImportance(importance);
+          if (loadVersionRef.current === loadId) {
+            if (data.modelParams) {
+              setModelParams(data.modelParams);
+              setModelTrained(true);
+            }
+            if (data.trainingStats) setTrainingStats(data.trainingStats);
+            // Compute feature importance.
+            if (data.modelParams && data.modelParams.weights) {
+              const feats = data.modelParams.features || sports[selectedSport].features;
+              const importance = feats
+                .map((f, i) => ({ feature: f, weight: Math.abs(data.modelParams.weights[i] || 0) }))
+                .sort((a, b) => b.weight - a.weight);
+              setFeatureImportance(importance);
+            }
           }
         }
       } catch (err) {
