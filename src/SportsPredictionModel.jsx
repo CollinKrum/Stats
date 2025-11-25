@@ -27,18 +27,12 @@ import {
  * retrieve it later from any device without re‑uploading.
  */
 
-// Base URL for the server API. When deploying to a hosted backend like Render,
-// set this to your deployed server’s URL so that the React app makes
-// requests to the correct origin. For example, if your backend is deployed at
-// https://stats-4aga.onrender.com, specify that here. You can still
-// override this via an environment variable (e.g. VITE_API_BASE_URL) when
-// configuring your build; otherwise this constant acts as a sensible default.
-// Note: process.env variables are replaced at build time by most bundlers,
-// but if you use Vite, prefer `import.meta.env.VITE_API_BASE_URL` instead.
-const API_BASE_URL =
-  process.env.REACT_APP_API_URL ||
-  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) ||
-  'https://stats-4aga.onrender.com';
+// Base URL for the server API.  You can override this by defining
+// REACT_APP_API_URL in your environment (e.g. when deployed to a hosted
+// backend).  When running locally with the Express server on the same
+// origin as the React app, an empty string will correctly point to
+// `/api/...` routes.
+const API_BASE_URL = process.env.REACT_APP_API_URL || '';
 
 const SportsPredictionModel = () => {
   const [selectedSport, setSelectedSport] = useState('nfl');
@@ -140,30 +134,37 @@ const SportsPredictionModel = () => {
    * regardless of where they were saved.
    */
   const loadSaved = async () => {
-    // Reset state relevant to predictions
+    // Reset state relevant to predictions and clear any previously loaded data.
+    // Clearing training data and filename here ensures stale data from a different
+    // sport is not displayed while new data is loading.
     setPrediction(null);
     setEvResult(null);
     setMatchupInputs({});
     setAppendMode(false);
+    setTrainingData([]);
+    setFileName('');
 
-    // Prefer server persistence when possible
+    // Flags to track whether data or model was loaded from the server
+    let trainingLoadedFromServer = false;
+    let modelLoadedFromServer = false;
+
+    // Attempt to load training data from the server
     try {
-      // Fetch training data
       const tdRes = await fetch(`${API_BASE_URL}/api/training-data?sport=${selectedSport}`);
       if (tdRes.ok) {
         const tdJson = await tdRes.json();
         if (Array.isArray(tdJson.rows)) {
           setTrainingData(tdJson.rows);
           setFileName('(loaded from server)');
+          trainingLoadedFromServer = true;
         }
       }
     } catch (err) {
-      // Server unavailable or error – fall back to local storage
       console.warn('Error loading training data from server:', err);
     }
 
-    // If trainingData not loaded from server, try local storage
-    if (trainingData.length === 0 && window.storage) {
+    // If training data was not found on the server, fall back to local storage
+    if (!trainingLoadedFromServer && window.storage) {
       try {
         const tdResult = await window.storage.get(`training-${selectedSport}`, false);
         if (tdResult && tdResult.value) {
@@ -176,14 +177,13 @@ const SportsPredictionModel = () => {
       }
     }
 
-    // Reset model flags before loading a model
+    // Reset model-related flags prior to loading
     setModelTrained(false);
     setModelParams(null);
     setTrainingStats(null);
     setFeatureImportance(null);
 
-    // Fetch model from server
-    let loadedModel = false;
+    // Attempt to load model from the server
     try {
       const modelRes = await fetch(`${API_BASE_URL}/api/model?sport=${selectedSport}`);
       if (modelRes.ok) {
@@ -201,15 +201,15 @@ const SportsPredictionModel = () => {
               .sort((a, b) => b.weight - a.weight);
             setFeatureImportance(importance);
           }
-          loadedModel = true;
+          modelLoadedFromServer = true;
         }
       }
     } catch (err) {
       console.warn('Error loading model from server:', err);
     }
 
-    // If model not loaded from server, try local storage
-    if (!loadedModel && window.storage) {
+    // If no model loaded from server, attempt to load from local storage
+    if (!modelLoadedFromServer && window.storage) {
       try {
         const modelResult = await window.storage.get(`model-${selectedSport}`, false);
         if (modelResult && modelResult.value) {
