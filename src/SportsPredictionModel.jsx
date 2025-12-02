@@ -18,13 +18,13 @@ import {
  * original implementation relied solely on a browser-provided `window.storage`
  * object to persist training data and trained models.  While that allowed
  * session persistence across multiple tabs (and, for some browsers, devices),
- * it forced the user to re‑upload their season data every time they opened
+ * it forced the user to re-upload their season data every time they opened
  * the application on a new machine.  To address this, the component has
  * been updated to integrate with a simple Express backend (see
  * server/server.js) which exposes RESTful endpoints for saving and loading
  * both the training data and model parameters.  This enables true
  * persistence on the server, so you can upload a dataset once and then
- * retrieve it later from any device without re‑uploading.
+ * retrieve it later from any device without re-uploading.
  */
 
 // Base URL for the server API. When deploying to a hosted backend like Render,
@@ -457,7 +457,7 @@ const SportsPredictionModel = () => {
    * Handle a CSV file upload.  After parsing and augmenting the rows, this
    * function saves the data both to local storage (if available) and to the
    * Express backend.  Persisting to the server means the user will not have
-   * to re‑upload the dataset from another device.
+   * to re-upload the dataset from another device.
    */
   const handleDataUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -467,6 +467,30 @@ const SportsPredictionModel = () => {
     try {
       const text = await file.text();
       let newRows = parseCSV(text);
+
+      // 🔹 NCAAB: normalize columns + drop games with missing moneylines
+      if (selectedSport === 'ncaab') {
+        newRows = newRows
+          .filter((row) => {
+            const hasHomeML =
+              typeof row.HomeMoneyline === 'number' && Number.isFinite(row.HomeMoneyline);
+            const hasAwayML =
+              typeof row.AwayMoneyline === 'number' && Number.isFinite(row.AwayMoneyline);
+            return hasHomeML && hasAwayML;
+          })
+          .map((row) => ({
+            ...row,
+            // Normalize to internal schema
+            team1: row.HomeTeam,
+            team2: row.AwayTeam,
+            home_final_score: row.HomeScore,
+            away_final_score: row.AwayScore,
+            team1_moneyline: row.HomeMoneyline,
+            team2_moneyline: row.AwayMoneyline,
+            spread: row.Spread,
+            total: row.OverUnder,
+          }));
+      }
 
       let finalRows;
 
@@ -597,8 +621,33 @@ const SportsPredictionModel = () => {
     const sportDef = sports[selectedSport];
     let baseCols = [];
 
-    if (sportDef.isTeamSeasonSport) {
-      baseCols = ['week', 'year', 'team1', 'team2', 'team1_moneyline', 'team2_moneyline', 'spread', 'total', 'home_final_score', 'away_final_score'];
+    if (selectedSport === 'ncaab') {
+      // 🔹 College basketball template matches your format exactly
+      baseCols = [
+        'Season',
+        'SeasonType',
+        'HomeTeam',
+        'HomeScore',
+        'AwayTeam',
+        'AwayScore',
+        'OverUnder',
+        'Spread',
+        'HomeMoneyline',
+        'AwayMoneyline',
+      ];
+    } else if (sportDef.isTeamSeasonSport) {
+      baseCols = [
+        'week',
+        'year',
+        'team1',
+        'team2',
+        'team1_moneyline',
+        'team2_moneyline',
+        'spread',
+        'total',
+        'home_final_score',
+        'away_final_score',
+      ];
     } else if (selectedSport === 'tennis') {
       baseCols = [
         'player1',
@@ -628,6 +677,16 @@ const SportsPredictionModel = () => {
 
     const exampleRow = baseCols
       .map((c) => {
+        // 🔹 Example values for NCAAB template
+        if (c === 'Season') return '2024';
+        if (c === 'SeasonType') return 'Regular';
+        if (c === 'HomeTeam') return 'HomeTeamA';
+        if (c === 'AwayTeam') return 'AwayTeamB';
+        if (c === 'HomeScore' || c === 'AwayScore') return '75';
+        if (c === 'OverUnder') return '145.5';
+        if (c === 'HomeMoneyline') return '-160';
+        if (c === 'AwayMoneyline') return '+140';
+
         if (c === 'winner') return '1';
         if (c.includes('moneyline')) return '-150';
         if (c.includes('ranking')) return '10';
