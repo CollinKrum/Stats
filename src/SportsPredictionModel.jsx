@@ -60,6 +60,12 @@ const SportsPredictionModel = () => {
   const [featureImportance, setFeatureImportance] = useState(null);
   const [appendMode, setAppendMode] = useState(false);
 
+  // NEW: Track where data/model came from: 'server' | 'local' | null
+  const [storageStatus, setStorageStatus] = useState({
+    trainingData: null, // 'server' | 'local' | null
+    model: null,        // 'server' | 'local' | null
+  });
+
   // A ref used to track the latest invocation of loadSaved. Each time
   // loadSaved is called, this counter increments. When asynchronous
   // fetches resolve, they compare against this ref to ensure they are
@@ -156,6 +162,7 @@ const SportsPredictionModel = () => {
     setAppendMode(false);
     setTrainingData([]);
     setFileName('');
+    setStorageStatus({ trainingData: null, model: null });
 
     // Flags to indicate whether data/model were loaded from the server.
     let trainingLoadedFromServer = false;
@@ -169,7 +176,8 @@ const SportsPredictionModel = () => {
         // Only update if this is the latest load invocation.
         if (loadVersionRef.current === loadId && Array.isArray(tdJson.rows)) {
           setTrainingData(tdJson.rows);
-          setFileName('(loaded from server)');
+          setFileName('✅ Loaded from server');
+          setStorageStatus((prev) => ({ ...prev, trainingData: 'server' }));
           trainingLoadedFromServer = true;
         }
       }
@@ -185,7 +193,8 @@ const SportsPredictionModel = () => {
           const rows = JSON.parse(tdResult.value);
           if (loadVersionRef.current === loadId) {
             setTrainingData(rows);
-            setFileName('(loaded from storage)');
+            setFileName('💾 Loaded from local storage');
+            setStorageStatus((prev) => ({ ...prev, trainingData: 'local' }));
           }
         }
       } catch (err) {
@@ -207,6 +216,7 @@ const SportsPredictionModel = () => {
         if (loadVersionRef.current === loadId && data.modelParams) {
           setModelParams(data.modelParams);
           setModelTrained(true);
+          setStorageStatus((prev) => ({ ...prev, model: 'server' }));
           if (data.trainingStats) setTrainingStats(data.trainingStats);
           // Compute feature importance.
           if (data.modelParams.weights && sports[selectedSport]) {
@@ -231,6 +241,7 @@ const SportsPredictionModel = () => {
         if (modelResult && modelResult.value) {
           const data = JSON.parse(modelResult.value);
           if (loadVersionRef.current === loadId) {
+            setStorageStatus((prev) => ({ ...prev, model: 'local' }));
             if (data.modelParams) {
               setModelParams(data.modelParams);
               setModelTrained(true);
@@ -285,9 +296,9 @@ const SportsPredictionModel = () => {
     const h = parseFloat(homeScore);
     const a = parseFloat(awayScore);
     const s = parseFloat(spread);
-    
+
     if (!isFinite(h) || !isFinite(a) || !isFinite(s)) return null;
-    
+
     const adjustedHome = h + s;
     if (adjustedHome > a) return 'home';
     if (adjustedHome < a) return 'away';
@@ -468,7 +479,7 @@ const SportsPredictionModel = () => {
       const text = await file.text();
       let newRows = parseCSV(text);
 
-      // 🔹 NCAAB: normalize columns + drop games with missing moneylines
+      // NCAAB: normalize columns + drop games with missing moneylines
       if (selectedSport === 'ncaab') {
         newRows = newRows
           .filter((row) => {
@@ -593,6 +604,7 @@ const SportsPredictionModel = () => {
     setActualOverOdds('');
     setActualUnderOdds('');
     setFileName('');
+    setStorageStatus({ trainingData: null, model: null });
 
     // Remove from local storage
     if (window.storage) {
@@ -622,7 +634,7 @@ const SportsPredictionModel = () => {
     let baseCols = [];
 
     if (selectedSport === 'ncaab') {
-      // 🔹 College basketball template matches your format exactly
+      // College basketball template matches your format exactly
       baseCols = [
         'Season',
         'SeasonType',
@@ -677,7 +689,7 @@ const SportsPredictionModel = () => {
 
     const exampleRow = baseCols
       .map((c) => {
-        // 🔹 Example values for NCAAB template
+        // Example values for NCAAB template
         if (c === 'Season') return '2024';
         if (c === 'SeasonType') return 'Regular';
         if (c === 'HomeTeam') return 'HomeTeamA';
@@ -830,20 +842,20 @@ const SportsPredictionModel = () => {
       ev2: ev2.toFixed(1),
       bestEV: bestEV.toFixed(1),
       side,
-      marketType: 'moneyline'
+      marketType: 'moneyline',
     };
   };
 
   const calculateSpreadEV = (team1WinProb, spread, odds1, odds2) => {
     const spreadMagnitude = Math.abs(parseFloat(spread));
-    
+
     let team1CoverProb;
     if (spread < 0) {
       team1CoverProb = team1WinProb * (0.85 - spreadMagnitude * 0.02);
     } else {
-      team1CoverProb = team1WinProb + (1 - team1WinProb) * (spreadMagnitude * 0.05);
+      team1CoverProb = team1WinProb + (1 - team1WinProb) * spreadMagnitude * 0.05;
     }
-    
+
     team1CoverProb = Math.max(0.1, Math.min(0.9, team1CoverProb));
     const team2CoverProb = 1 - team1CoverProb;
 
@@ -863,14 +875,14 @@ const SportsPredictionModel = () => {
       side,
       marketType: 'spread',
       team1CoverProb: (team1CoverProb * 100).toFixed(1),
-      team2CoverProb: (team2CoverProb * 100).toFixed(1)
+      team2CoverProb: (team2CoverProb * 100).toFixed(1),
     };
   };
 
   const calculateTotalEV = (team1WinProb, total, overOdds, underOdds) => {
     const expectedTotal = parseFloat(total);
-    
-    const scoringFactor = 0.45 + (team1WinProb * 0.1);
+
+    const scoringFactor = 0.45 + team1WinProb * 0.1;
     const overProb = Math.max(0.3, Math.min(0.7, scoringFactor));
     const underProb = 1 - overProb;
 
@@ -890,7 +902,7 @@ const SportsPredictionModel = () => {
       side,
       marketType: 'total',
       overProb: (overProb * 100).toFixed(1),
-      underProb: (underProb * 100).toFixed(1)
+      underProb: (underProb * 100).toFixed(1),
     };
   };
 
@@ -1004,6 +1016,33 @@ const SportsPredictionModel = () => {
     URL.revokeObjectURL(url);
   };
 
+  // NEW: Export model as JSON (for re-importing elsewhere / backing up)
+  const downloadModelJSON = () => {
+    if (!modelTrained || !modelParams) {
+      alert('No model to export');
+      return;
+    }
+
+    const exportData = {
+      sport: selectedSport,
+      sportName: sports[selectedSport].name,
+      modelParams: modelParams,
+      trainingStats: trainingStats,
+      featureImportance: featureImportance,
+      exportedAt: new Date().toISOString(),
+      version: '1.0',
+    };
+
+    const json = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedSport}_model_${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
       <div className="max-w-7xl mx-auto">
@@ -1016,7 +1055,8 @@ const SportsPredictionModel = () => {
                   Pro Sports Prediction Model
                 </h1>
                 <p className="text-blue-100 mt-2">
-                  Spread Auto-Detection • +EV Finder • {window.storage ? 'Cloud Sync Across Devices' : 'Server & Session Storage'}
+                  Spread Auto-Detection • +EV Finder •{' '}
+                  {window.storage ? 'Cloud Sync Across Devices' : 'Server & Session Storage'}
                 </p>
               </div>
             </div>
@@ -1061,6 +1101,7 @@ const SportsPredictionModel = () => {
             </div>
 
             <div className="grid lg:grid-cols-2 gap-8">
+              {/* LEFT SIDE: Training Data & Model */}
               <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
                 <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
                   <Database className="text-blue-400" /> Training Data
@@ -1074,7 +1115,10 @@ const SportsPredictionModel = () => {
                     onChange={(e) => setAppendMode(e.target.checked)}
                     className="w-5 h-5 rounded accent-blue-500 cursor-pointer"
                   />
-                  <label htmlFor="append-mode" className="text-white font-semibold cursor-pointer flex-1">
+                  <label
+                    htmlFor="append-mode"
+                    className="text-white font-semibold cursor-pointer flex-1"
+                  >
                     📎 Append to existing {trainingData.length} games (don't replace)
                   </label>
                 </div>
@@ -1091,14 +1135,29 @@ const SportsPredictionModel = () => {
                   </div>
                 </label>
 
+                {/* Training data status with source badge */}
                 {trainingData.length > 0 && (
                   <div className="mt-6 p-6 bg-green-500/20 rounded-xl border border-green-400/40">
-                    <p className="text-green-300 text-lg font-bold">
-                      Loaded {trainingData.length} games
-                    </p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-green-300 text-lg font-bold">
+                        Loaded {trainingData.length} games
+                      </p>
+                      {storageStatus.trainingData && (
+                        <span
+                          className={`px-3 py-1 rounded-full text-xs font-bold ${
+                            storageStatus.trainingData === 'server'
+                              ? 'bg-blue-500/30 text-blue-300 border border-blue-400/50'
+                              : 'bg-purple-500/30 text-purple-300 border border-purple-400/50'
+                          }`}
+                        >
+                          {storageStatus.trainingData === 'server' ? '☁️ Server' : '💾 Local'}
+                        </span>
+                      )}
+                    </div>
                     {trainingStats && (
                       <p className="text-sm mt-2 text-green-200">
-                        Accuracy: <strong>{trainingStats.accuracy}%</strong> on {trainingStats.samplesUsed} clean games
+                        Accuracy: <strong>{trainingStats.accuracy}%</strong> on{' '}
+                        {trainingStats.samplesUsed} clean games
                       </p>
                     )}
                   </div>
@@ -1112,9 +1171,23 @@ const SportsPredictionModel = () => {
                   {isTraining ? 'Training Pro Model...' : 'Train Pro Model'}
                 </button>
 
+                {/* Model status with source badge */}
                 {modelTrained && (
                   <div className="mt-6 p-6 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-xl border border-blue-400/40">
-                    <p className="text-blue-300 font-bold text-lg">Pro Model Ready</p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-blue-300 font-bold text-lg">Pro Model Ready</p>
+                      {storageStatus.model && (
+                        <span
+                          className={`px-3 py-1 rounded-full text-xs font-bold ${
+                            storageStatus.model === 'server'
+                              ? 'bg-blue-500/30 text-blue-300 border border-blue-400/50'
+                              : 'bg-purple-500/30 text-purple-300 border border-purple-400/50'
+                          }`}
+                        >
+                          {storageStatus.model === 'server' ? '☁️ Server' : '💾 Local'}
+                        </span>
+                      )}
+                    </div>
                     {featureImportance && (
                       <div className="mt-4 space-y-2">
                         <p className="text-sm text-blue-200">Top Features:</p>
@@ -1132,7 +1205,65 @@ const SportsPredictionModel = () => {
                 )}
               </div>
 
+              {/* RIGHT SIDE: Storage dashboard + Quick Actions */}
               <div className="space-y-6">
+                {/* Storage Status Dashboard */}
+                <div className="bg-gradient-to-r from-indigo-500/10 to-purple-500/10 rounded-2xl p-6 border border-indigo-400/30">
+                  <h3 className="text-lg font-bold text-indigo-300 mb-4 flex items-center gap-2">
+                    <Database className="w-5 h-5" /> Storage Status
+                  </h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-black/20 rounded-lg p-4">
+                      <p className="text-sm text-gray-400 mb-2">Training Data</p>
+                      <div className="flex items-center gap-2">
+                        {storageStatus.trainingData === 'server' && (
+                          <>
+                            <CheckCircle className="w-5 h-5 text-green-400" />
+                            <span className="text-green-300 font-semibold">Server Synced</span>
+                          </>
+                        )}
+                        {storageStatus.trainingData === 'local' && (
+                          <>
+                            <AlertCircle className="w-5 h-5 text-yellow-400" />
+                            <span className="text-yellow-300 font-semibold">Local Only</span>
+                          </>
+                        )}
+                        {!storageStatus.trainingData && (
+                          <>
+                            <XCircle className="w-5 h-5 text-gray-500" />
+                            <span className="text-gray-500 font-semibold">No Data</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-black/20 rounded-lg p-4">
+                      <p className="text-sm text-gray-400 mb-2">Model</p>
+                      <div className="flex items-center gap-2">
+                        {storageStatus.model === 'server' && (
+                          <>
+                            <CheckCircle className="w-5 h-5 text-green-400" />
+                            <span className="text-green-300 font-semibold">Server Synced</span>
+                          </>
+                        )}
+                        {storageStatus.model === 'local' && (
+                          <>
+                            <AlertCircle className="w-5 h-5 text-yellow-400" />
+                            <span className="text-yellow-300 font-semibold">Local Only</span>
+                          </>
+                        )}
+                        {!storageStatus.model && (
+                          <>
+                            <Minus className="w-5 h-5 text-gray-500" />
+                            <span className="text-gray-500 font-semibold">Not Trained</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Actions */}
                 <div className="bg-white/5 rounded-2xl p-6 border border-white/10">
                   <h3 className="text-xl font-bold text-white mb-4">Quick Actions</h3>
                   <div className="grid grid-cols-2 gap-4">
@@ -1155,6 +1286,16 @@ const SportsPredictionModel = () => {
                       Clear All
                     </button>
                   </div>
+
+                  {/* NEW: Export Model JSON */}
+                  <button
+                    onClick={downloadModelJSON}
+                    disabled={!modelTrained}
+                    className="mt-4 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/50 py-4 rounded-xl text-purple-300 font-semibold disabled:opacity-50 disabled:cursor-not-allowed w-full"
+                  >
+                    Export Model JSON
+                  </button>
+
                   {modelTrained && (
                     <button
                       onClick={downloadModelReport}
@@ -1197,7 +1338,9 @@ const SportsPredictionModel = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
                   <div className="col-span-full">
-                    <h3 className="text-xl font-bold text-yellow-300 mb-4">💰 Moneyline Odds</h3>
+                    <h3 className="text-xl font-bold text-yellow-300 mb-4">
+                      💰 Moneyline Odds
+                    </h3>
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-yellow-300 mb-2">
@@ -1273,7 +1416,9 @@ const SportsPredictionModel = () => {
                   {sports[selectedSport].supportsTotal && (
                     <>
                       <div className="col-span-full mt-4">
-                        <h3 className="text-xl font-bold text-blue-300 mb-4">🎯 Total (Over/Under)</h3>
+                        <h3 className="text-xl font-bold text-blue-300 mb-4">
+                          🎯 Total (Over/Under)
+                        </h3>
                       </div>
                       <div>
                         <label className="block text-sm font-bold text-blue-300 mb-2">
@@ -1381,25 +1526,55 @@ const SportsPredictionModel = () => {
                             </h4>
 
                             <p className="text-5xl font-bold text-white mb-4">
-                              {result.side} → {parseFloat(result.bestEV) > 0 ? '+' : ''}{result.bestEV}% EV
+                              {result.side} → {parseFloat(result.bestEV) > 0 ? '+' : ''}
+                              {result.bestEV}% EV
                             </p>
 
                             {result.marketType === 'spread' && (
                               <div className="text-lg text-gray-300 mb-2">
-                                <p>Team 1 Cover Probability: <strong className="text-blue-400">{result.team1CoverProb}%</strong></p>
-                                <p>Team 2 Cover Probability: <strong className="text-purple-400">{result.team2CoverProb}%</strong></p>
+                                <p>
+                                  Team 1 Cover Probability:{' '}
+                                  <strong className="text-blue-400">
+                                    {result.team1CoverProb}%
+                                  </strong>
+                                </p>
+                                <p>
+                                  Team 2 Cover Probability:{' '}
+                                  <strong className="text-purple-400">
+                                    {result.team2CoverProb}%
+                                  </strong>
+                                </p>
                               </div>
                             )}
 
                             {result.marketType === 'total' && (
                               <div className="text-lg text-gray-300 mb-2">
-                                <p>Over Probability: <strong className="text-orange-400">{result.overProb}%</strong></p>
-                                <p>Under Probability: <strong className="text-cyan-400">{result.underProb}%</strong></p>
+                                <p>
+                                  Over Probability:{' '}
+                                  <strong className="text-orange-400">
+                                    {result.overProb}%
+                                  </strong>
+                                </p>
+                                <p>
+                                  Under Probability:{' '}
+                                  <strong className="text-cyan-400">
+                                    {result.underProb}%
+                                  </strong>
+                                </p>
                               </div>
                             )}
 
                             <p className="text-xl text-gray-300 mt-4">
-                              Bet $100 → Expected Value: <strong className={parseFloat(result.bestEV) > 0 ? 'text-green-400' : 'text-red-400'}>${parseFloat(result.bestEV).toFixed(1)}</strong>
+                              Bet $100 → Expected Value:{' '}
+                              <strong
+                                className={
+                                  parseFloat(result.bestEV) > 0
+                                    ? 'text-green-400'
+                                    : 'text-red-400'
+                                }
+                              >
+                                ${parseFloat(result.bestEV).toFixed(1)}
+                              </strong>
                             </p>
                           </div>
                         ))}
