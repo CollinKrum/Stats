@@ -14,25 +14,10 @@ import {
 } from 'lucide-react';
 
 /*
- * This component encapsulates the sports prediction model UI and logic.  The
- * original implementation relied solely on a browser-provided `window.storage`
- * object to persist training data and trained models.  While that allowed
- * session persistence across multiple tabs (and, for some browsers, devices),
- * it forced the user to re-upload their season data every time they opened
- * the application on a new machine.  To address this, the component has
- * been updated to integrate with a simple Express backend (see
- * server/server.js) which exposes RESTful endpoints for saving and loading
- * both the training data and model parameters.  This enables true
- * persistence on the server, so you can upload a dataset once and then
- * retrieve it later from any device without re-uploading.
+ * This component encapsulates the sports prediction model UI and logic.
  */
 
-// Base URL for the server API. When deploying to a hosted backend like Render,
-// set this to your deployed server’s URL so that the React app makes
-// requests to the correct origin. You can override this via the environment
-// variables REACT_APP_API_URL (Create React App) or VITE_API_BASE_URL (Vite).
-// If neither environment variable is defined, it falls back to the default
-// Render deployment used by this project.
+// Base URL for the server API.
 const API_BASE_URL =
   process.env.REACT_APP_API_URL ||
   (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE_URL) ||
@@ -62,21 +47,17 @@ const SportsPredictionModel = () => {
 
   // NEW: Track where data/model came from: 'server' | 'local' | null
   const [storageStatus, setStorageStatus] = useState({
-    trainingData: null, // 'server' | 'local' | null
-    model: null,        // 'server' | 'local' | null
+    trainingData: null,
+    model: null,
   });
 
-  // A ref used to track the latest invocation of loadSaved. Each time
-  // loadSaved is called, this counter increments. When asynchronous
-  // fetches resolve, they compare against this ref to ensure they are
-  // operating on the latest requested sport. This prevents race
-  // conditions where responses from previous sports could overwrite
-  // state after the user has selected a different sport.
+  // NEW: Backtest state
+  const [backtestResult, setBacktestResult] = useState(null);
+  const [isBacktesting, setIsBacktesting] = useState(false);
+
+  // Guard for async loads
   const loadVersionRef = useRef(0);
 
-  // Definition of supported sports.  Each entry defines the display name,
-  // which input features are used when training/predicting, and whether
-  // spread/total EV calculations apply.
   const sports = {
     nfl: {
       name: 'NFL',
@@ -137,25 +118,14 @@ const SportsPredictionModel = () => {
     },
   };
 
-  // Whenever the selected sport changes, attempt to load any saved
-  // training data/model from the server or local storage.
   useEffect(() => {
     loadSaved();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSport]);
 
-  /**
-   * Attempt to load training data and model for the currently selected sport.
-   * This function first tries to fetch from the Express API.  If no data
-   * exists on the server (404), it falls back to local storage (window.storage)
-   * if available.  This ensures that users can recover previous sessions
-   * regardless of where they were saved.
-   */
   const loadSaved = async () => {
-    // Increment the load version to guard against stale responses when rapidly switching sports.
     const loadId = ++loadVersionRef.current;
 
-    // Reset prediction and match-related state, and clear any previously loaded training data and file name.
     setPrediction(null);
     setEvResult(null);
     setMatchupInputs({});
@@ -163,17 +133,16 @@ const SportsPredictionModel = () => {
     setTrainingData([]);
     setFileName('');
     setStorageStatus({ trainingData: null, model: null });
+    setBacktestResult(null);
 
-    // Flags to indicate whether data/model were loaded from the server.
     let trainingLoadedFromServer = false;
     let modelLoadedFromServer = false;
 
-    // Attempt to fetch training data from the server.
+    // Training data from server
     try {
       const tdRes = await fetch(`${API_BASE_URL}/api/training-data?sport=${selectedSport}`);
       if (tdRes.ok) {
         const tdJson = await tdRes.json();
-        // Only update if this is the latest load invocation.
         if (loadVersionRef.current === loadId && Array.isArray(tdJson.rows)) {
           setTrainingData(tdJson.rows);
           setFileName('✅ Loaded from server');
@@ -185,7 +154,7 @@ const SportsPredictionModel = () => {
       console.warn('Error loading training data from server:', err);
     }
 
-    // Fallback to local storage if no server data.
+    // Fallback to local
     if (!trainingLoadedFromServer && window.storage) {
       try {
         const tdResult = await window.storage.get(`training-${selectedSport}`, false);
@@ -202,13 +171,13 @@ const SportsPredictionModel = () => {
       }
     }
 
-    // Reset model-related state before loading a model.
+    // Reset model info
     setModelTrained(false);
     setModelParams(null);
     setTrainingStats(null);
     setFeatureImportance(null);
 
-    // Attempt to fetch the model from the server.
+    // Model from server
     try {
       const modelRes = await fetch(`${API_BASE_URL}/api/model?sport=${selectedSport}`);
       if (modelRes.ok) {
@@ -218,7 +187,6 @@ const SportsPredictionModel = () => {
           setModelTrained(true);
           setStorageStatus((prev) => ({ ...prev, model: 'server' }));
           if (data.trainingStats) setTrainingStats(data.trainingStats);
-          // Compute feature importance.
           if (data.modelParams.weights && sports[selectedSport]) {
             const { weights } = data.modelParams;
             const feats = data.modelParams.features || sports[selectedSport].features;
@@ -234,7 +202,7 @@ const SportsPredictionModel = () => {
       console.warn('Error loading model from server:', err);
     }
 
-    // Fallback to local storage if no server model.
+    // Model from local
     if (!modelLoadedFromServer && window.storage) {
       try {
         const modelResult = await window.storage.get(`model-${selectedSport}`, false);
@@ -247,7 +215,6 @@ const SportsPredictionModel = () => {
               setModelTrained(true);
             }
             if (data.trainingStats) setTrainingStats(data.trainingStats);
-            // Compute feature importance.
             if (data.modelParams && data.modelParams.weights) {
               const feats = data.modelParams.features || sports[selectedSport].features;
               const importance = feats
@@ -263,7 +230,6 @@ const SportsPredictionModel = () => {
     }
   };
 
-  // Utility functions and model training logic remain largely unchanged
   const sigmoid = (z) => 1 / (1 + Math.exp(-z));
 
   const moneylineToFairProb = (ml) => {
@@ -418,8 +384,8 @@ const SportsPredictionModel = () => {
       let winner = row.winner;
       if (winner === undefined || winner === null || winner === '') {
         winner = determineWinnerFromScores(
-          row.home_final_score || row.homeScore,
-          row.away_final_score || row.awayScore,
+          row.home_final_score || row.HomeScore,
+          row.away_final_score || row.AwayScore,
           row.spread
         );
       }
@@ -464,12 +430,6 @@ const SportsPredictionModel = () => {
     });
   };
 
-  /**
-   * Handle a CSV file upload.  After parsing and augmenting the rows, this
-   * function saves the data both to local storage (if available) and to the
-   * Express backend.  Persisting to the server means the user will not have
-   * to re-upload the dataset from another device.
-   */
   const handleDataUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -479,7 +439,7 @@ const SportsPredictionModel = () => {
       const text = await file.text();
       let newRows = parseCSV(text);
 
-      // NCAAB: normalize columns + drop games with missing moneylines
+      // NCAAB: normalize + drop games without moneylines
       if (selectedSport === 'ncaab') {
         newRows = newRows
           .filter((row) => {
@@ -491,7 +451,6 @@ const SportsPredictionModel = () => {
           })
           .map((row) => ({
             ...row,
-            // Normalize to internal schema
             team1: row.HomeTeam,
             team2: row.AwayTeam,
             home_final_score: row.HomeScore,
@@ -522,13 +481,12 @@ const SportsPredictionModel = () => {
       setModelParams(null);
       setPrediction(null);
       setEvResult(null);
+      setBacktestResult(null);
 
-      // Save to local storage for offline use if available
       if (window.storage) {
         await window.storage.set(`training-${selectedSport}`, JSON.stringify(finalRows), false);
       }
 
-      // Persist to server
       try {
         await fetch(`${API_BASE_URL}/api/training-data`, {
           method: 'POST',
@@ -578,12 +536,6 @@ const SportsPredictionModel = () => {
     URL.revokeObjectURL(url);
   };
 
-  /**
-   * Clear all data for the selected sport.  This resets the UI, removes
-   * persisted data from both local storage and the server, and logs any
-   * issues encountered.  A confirmation prompt is presented to prevent
-   * accidental deletion.
-   */
   const clearSportData = async () => {
     if (!window.confirm(`Clear all data for ${sports[selectedSport].name}?`)) return;
 
@@ -605,8 +557,8 @@ const SportsPredictionModel = () => {
     setActualUnderOdds('');
     setFileName('');
     setStorageStatus({ trainingData: null, model: null });
+    setBacktestResult(null);
 
-    // Remove from local storage
     if (window.storage) {
       try {
         await window.storage.delete(`training-${selectedSport}`, false);
@@ -616,7 +568,6 @@ const SportsPredictionModel = () => {
       }
     }
 
-    // Remove from server
     try {
       await fetch(`${API_BASE_URL}/api/training-data?sport=${selectedSport}`, { method: 'DELETE' });
     } catch (err) {
@@ -634,7 +585,6 @@ const SportsPredictionModel = () => {
     let baseCols = [];
 
     if (selectedSport === 'ncaab') {
-      // College basketball template matches your format exactly
       baseCols = [
         'Season',
         'SeasonType',
@@ -689,7 +639,6 @@ const SportsPredictionModel = () => {
 
     const exampleRow = baseCols
       .map((c) => {
-        // Example values for NCAAB template
         if (c === 'Season') return '2024';
         if (c === 'SeasonType') return 'Regular';
         if (c === 'HomeTeam') return 'HomeTeamA';
@@ -726,12 +675,6 @@ const SportsPredictionModel = () => {
     URL.revokeObjectURL(url);
   };
 
-  /**
-   * Train a logistic regression model on the currently loaded training data.
-   * Once training completes, the model and its statistics are saved locally
-   * and posted to the server for persistence.  If training fails for any
-   * reason, an error message is shown to the user.
-   */
   const trainModel = async () => {
     if (trainingData.length < 20) {
       alert('Need at least 20 games');
@@ -766,10 +709,7 @@ const SportsPredictionModel = () => {
     const y = usable.map((r) => Number(r.winner));
 
     setIsTraining(true);
-
-    let model;
-    let stats;
-    let importance;
+    setBacktestResult(null);
 
     try {
       const result = trainLogisticRegression(X, y, {
@@ -780,13 +720,13 @@ const SportsPredictionModel = () => {
 
       const { weights, bias, means, stds, accuracy, samplesUsed } = result;
 
-      model = { weights, bias, means, stds, features };
-      stats = {
+      const model = { weights, bias, means, stds, features };
+      const stats = {
         accuracy: (accuracy * 100).toFixed(1),
         samplesUsed,
       };
 
-      importance = features
+      const importance = features
         .map((f, i) => ({ feature: f, weight: Math.abs(weights[i]) }))
         .sort((a, b) => b.weight - a.weight);
 
@@ -795,7 +735,6 @@ const SportsPredictionModel = () => {
       setTrainingStats(stats);
       setFeatureImportance(importance);
 
-      // Save to local storage for offline access
       if (window.storage) {
         await window.storage.set(
           `model-${selectedSport}`,
@@ -804,7 +743,6 @@ const SportsPredictionModel = () => {
         );
       }
 
-      // Persist to server
       try {
         await fetch(`${API_BASE_URL}/api/model`, {
           method: 'POST',
@@ -822,6 +760,163 @@ const SportsPredictionModel = () => {
     } finally {
       setIsTraining(false);
     }
+  };
+
+  // BACKTEST ENGINE
+  const runBacktest = async () => {
+    if (!modelTrained || !modelParams || trainingData.length < 50) {
+      alert('Need a trained model and at least 50 games');
+      return;
+    }
+
+    setIsBacktesting(true);
+    setBacktestResult(null);
+
+    // Sort data chronologically — CRITICAL for true OOS
+    const sorted = [...trainingData].sort((a, b) => {
+      const getDate = (row) => {
+        if (row.date) return new Date(row.date);
+        if (row.week && row.year) return new Date(`${row.year}-W${String(row.week).padStart(2, '0')}`);
+        if (row.Season && row.Week) return new Date(`${row.Season}-W${String(row.Week).padStart(2, '0')}`);
+        return 0;
+      };
+      return getDate(a) - getDate(b);
+    });
+
+    const { weights, bias, means, stds, features } = modelParams;
+
+    const bets = {
+      moneyline: { bets: 0, correct: 0, profit: 0, evSum: 0 },
+      spread: { bets: 0, correct: 0, profit: 0, evSum: 0 },
+      total: { bets: 0, correct: 0, profit: 0, evSum: 0 },
+    };
+
+    let balance = 10000;
+    const history = [];
+
+    for (let i = 20; i < sorted.length; i++) {
+      const current = sorted[i];
+
+      if (current.winner === null || current.winner === undefined || current.winner === '') continue;
+
+      let valid = true;
+      const raw = features.map((f) => {
+        if (f.includes('moneyline')) {
+          const ml1 = parseFloat(current.team1_moneyline || current.HomeMoneyline);
+          const ml2 = parseFloat(current.team2_moneyline || current.AwayMoneyline);
+          if (!ml1 || !ml2) valid = false;
+          const p1 = moneylineToFairProb(ml1);
+          const p2 = moneylineToFairProb(ml2);
+          const { p1: fair1, p2: fair2 } = removeVig(p1, p2);
+          return f === 'team1_moneyline' ? fair1 : fair2;
+        }
+        const val = parseFloat(current[f]);
+        if (!Number.isFinite(val)) valid = false;
+        return Number.isFinite(val) ? val : 0;
+      });
+
+      if (!valid) continue;
+
+      const xNorm = raw.map((v, j) => (v - means[j]) / stds[j]);
+      const z = bias + weights.reduce((s, w, j) => s + w * xNorm[j], 0);
+      const modelProb = sigmoid(z); // Team 1 win probability
+
+      const actualWinner = Number(current.winner); // 1 = team1 wins
+
+      // MONEYLINE BET
+      const ml1 = parseFloat(current.team1_moneyline || current.HomeMoneyline);
+      const ml2 = parseFloat(current.team2_moneyline || current.AwayMoneyline);
+      if (ml1 && ml2 && ml1 !== 0 && ml2 !== 0) {
+        const evResult = calculateEV(modelProb, ml1, ml2);
+        const ev = parseFloat(evResult.bestEV);
+        if (ev > 2) {
+          const side = evResult.side;
+          const odds = side.includes('Team 1') ? ml1 : ml2;
+          const stake = 100;
+          const won =
+            (side.includes('Team 1') && actualWinner === 1) ||
+            (side.includes('Team 2') && actualWinner === 0);
+
+          bets.moneyline.bets++;
+          if (won) bets.moneyline.correct++;
+          const payout = won
+            ? odds > 0
+              ? stake * (odds / 100)
+              : stake * (100 / Math.abs(odds))
+            : -stake;
+          bets.moneyline.profit += payout;
+          bets.moneyline.evSum += ev;
+          balance += payout;
+        }
+      }
+
+      // SPREAD BET
+      if (sports[selectedSport].supportsSpread && current.spread && current.spread !== '') {
+        const spread = parseFloat(current.spread);
+        const odds1 = current.spread_odds1 || -110;
+        const odds2 = current.spread_odds2 || -110;
+        if (spread && odds1 && odds2) {
+          const evResult = calculateSpreadEV(modelProb, spread, odds1, odds2);
+          const ev = parseFloat(evResult.bestEV);
+          if (ev > 2) {
+            bets.spread.bets++;
+            const won = evResult.side.includes('Team 1') ? actualWinner === 1 : actualWinner === 0;
+            if (won) bets.spread.correct++;
+            const payout = won
+              ? 100 * (odds1 > 0 ? odds1 / 100 : 100 / Math.abs(odds1)) - 100
+              : -100;
+            bets.spread.profit += payout;
+            balance += payout;
+          }
+        }
+      }
+
+      // TOTAL BET
+      if (sports[selectedSport].supportsTotal && current.total) {
+        const total = parseFloat(current.total);
+        const overOdds = current.over_odds || -110;
+        const underOdds = current.under_odds || -110;
+        if (total && overOdds && underOdds) {
+          const evResult = calculateTotalEV(modelProb, total, overOdds, underOdds);
+          const ev = parseFloat(evResult.bestEV);
+          if (ev > 2) {
+            bets.total.bets++;
+            const actualTotal =
+              (parseFloat(current.home_final_score || current.HomeScore) || 0) +
+              (parseFloat(current.away_final_score || current.AwayScore) || 0);
+            const won = evResult.side.includes('Over')
+              ? actualTotal > total
+              : actualTotal < total;
+            if (won) bets.total.correct++;
+            const payout = won
+              ? 100 * (overOdds > 0 ? overOdds / 100 : 100 / Math.abs(overOdds)) - 100
+              : -100;
+            bets.total.profit += payout;
+            balance += payout;
+          }
+        }
+      }
+
+      history.push({ game: i, balance });
+    }
+
+    const totalBets = Object.values(bets).reduce((s, m) => s + m.bets, 0);
+    const totalProfit = Object.values(bets).reduce((s, m) => s + m.profit, 0);
+    const roi =
+      totalBets > 0 ? ((totalProfit / (totalBets * 100)) * 100).toFixed(2) : 0;
+
+    setBacktestResult({
+      bets,
+      totalBets,
+      totalProfit: totalProfit.toFixed(2),
+      roi: roi + '%',
+      finalBalance: balance.toFixed(2),
+      startingBalance: 10000,
+      history,
+      gamesTested: sorted.length - 20,
+    });
+
+    setIsBacktesting(false);
   };
 
   const calculateEV = (modelProb, ml1, ml2) => {
@@ -1016,7 +1111,6 @@ const SportsPredictionModel = () => {
     URL.revokeObjectURL(url);
   };
 
-  // NEW: Export model as JSON (for re-importing elsewhere / backing up)
   const downloadModelJSON = () => {
     if (!modelTrained || !modelParams) {
       alert('No model to export');
@@ -1082,26 +1176,16 @@ const SportsPredictionModel = () => {
             <div className="bg-blue-900/30 border border-blue-700/50 rounded-lg p-4 flex gap-3">
               <AlertCircle className="text-blue-400 flex-shrink-0 mt-0.5" size={20} />
               <div className="text-sm text-blue-200">
-                {window.storage ? (
-                  <>
-                    <strong>✨ Syncs across devices!</strong> Upload season data with scores and spreads.
-                  </>
-                ) : (
-                  <>
-                    <strong>⚠️ Storage not available:</strong> Data will be stored on the server only.
-                  </>
-                )}
-                <br />
-                <strong>🎯 Auto-Detection:</strong> Winner determined from final scores + spread (negative = home favored).
-                <br />
-                <strong>📊 Last 5 calculated automatically</strong> for chronological season uploads.
-                <br />
-                <strong>💰 Multi-Market EV:</strong> Find edges in moneyline, spread, and totals all at once!
+                <strong>🎯 Auto-Detection:</strong> Winner from scores + spread (negative = home
+                favorite). <br />
+                <strong>📊 Last 5:</strong> Auto-calculated as long as your upload is in
+                chronological order. <br />
+                <strong>💰 Multi-Market EV:</strong> Moneyline, spread, and totals all in one shot.
               </div>
             </div>
 
             <div className="grid lg:grid-cols-2 gap-8">
-              {/* LEFT SIDE: Training Data & Model */}
+              {/* LEFT: Training & Model */}
               <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
                 <h2 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
                   <Database className="text-blue-400" /> Training Data
@@ -1135,7 +1219,6 @@ const SportsPredictionModel = () => {
                   </div>
                 </label>
 
-                {/* Training data status with source badge */}
                 {trainingData.length > 0 && (
                   <div className="mt-6 p-6 bg-green-500/20 rounded-xl border border-green-400/40">
                     <div className="flex items-center justify-between mb-2">
@@ -1171,7 +1254,6 @@ const SportsPredictionModel = () => {
                   {isTraining ? 'Training Pro Model...' : 'Train Pro Model'}
                 </button>
 
-                {/* Model status with source badge */}
                 {modelTrained && (
                   <div className="mt-6 p-6 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-xl border border-blue-400/40">
                     <div className="flex items-center justify-between mb-2">
@@ -1201,13 +1283,91 @@ const SportsPredictionModel = () => {
                         ))}
                       </div>
                     )}
+
+                    {/* BACKTEST BUTTON + RESULTS */}
+                    <div className="mt-8">
+                      <button
+                        onClick={runBacktest}
+                        disabled={isBacktesting}
+                        className="w-full bg-gradient-to-r from-orange-500 to-red-600 text-white py-6 rounded-2xl font-bold text-2xl hover:shadow-2xl transition-all disabled:opacity-70 flex items-center justify-center gap-4"
+                      >
+                        {isBacktesting ? (
+                          <>Running Backtest... (this can take 30–90 sec)</>
+                        ) : (
+                          <>
+                            <TrendingUp className="w-8 h-8" />
+                            RUN FULL BACKTEST (Out-of-Sample)
+                          </>
+                        )}
+                      </button>
+
+                      {backtestResult && (
+                        <div className="mt-8 p-8 bg-gradient-to-br from-green-600/20 to-emerald-600/20 rounded-2xl border-4 border-green-500">
+                          <h2 className="text-4xl font-bold text-white mb-6 text-center">
+                            BACKTEST COMPLETE — {backtestResult.gamesTested} GAMES
+                          </h2>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                            <div className="bg-black/40 rounded-2xl p-6 text-center">
+                              <p className="text-5xl font-bold text-green-400">
+                                {parseFloat(backtestResult.roi) > 0 ? '+' : ''}
+                                {backtestResult.roi}
+                              </p>
+                              <p className="text-xl text-gray-300 mt-2">
+                                ROI (Flat $100 bets)
+                              </p>
+                            </div>
+                            <div className="bg-black/40 rounded-2xl p-6 text-center">
+                              <p className="text-5xl font-bold text-yellow-400">
+                                ${backtestResult.totalProfit}
+                              </p>
+                              <p className="text-xl text-gray-300 mt-2">Net Profit</p>
+                            </div>
+                            <div className="bg-black/40 rounded-2xl p-6 text-center">
+                              <p className="text-5xl font-bold text-cyan-400">
+                                {backtestResult.totalBets}
+                              </p>
+                              <p className="text-xl text-gray-300 mt-2">+EV Bets Found</p>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-4 text-center">
+                            {Object.entries(backtestResult.bets).map(
+                              ([market, data]) =>
+                                data.bets > 0 && (
+                                  <div key={market} className="bg-white/10 rounded-xl p-4">
+                                    <p className="text-lg font-bold capitalize text-white">
+                                      {market}
+                                    </p>
+                                    <p className="text-2xl text-green-400">
+                                      +${data.profit.toFixed(0)}
+                                    </p>
+                                    <p className="text-sm text-gray-400">
+                                      {data.correct}/{data.bets} (
+                                      {((data.correct / data.bets) * 100).toFixed(1)}%)
+                                    </p>
+                                  </div>
+                                )
+                            )}
+                          </div>
+
+                          <div className="mt-8 text-center">
+                            <p className="text-2xl font-bold text-white">
+                              Final Bankroll:{' '}
+                              <span className="text-green-400">
+                                ${backtestResult.finalBalance}
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
 
-              {/* RIGHT SIDE: Storage dashboard + Quick Actions */}
+              {/* RIGHT: Storage + Quick Actions */}
               <div className="space-y-6">
-                {/* Storage Status Dashboard */}
                 <div className="bg-gradient-to-r from-indigo-500/10 to-purple-500/10 rounded-2xl p-6 border border-indigo-400/30">
                   <h3 className="text-lg font-bold text-indigo-300 mb-4 flex items-center gap-2">
                     <Database className="w-5 h-5" /> Storage Status
@@ -1263,19 +1423,18 @@ const SportsPredictionModel = () => {
                   </div>
                 </div>
 
-                {/* Quick Actions */}
                 <div className="bg-white/5 rounded-2xl p-6 border border-white/10">
                   <h3 className="text-xl font-bold text-white mb-4">Quick Actions</h3>
                   <div className="grid grid-cols-2 gap-4">
                     <button
                       onClick={downloadTemplate}
-                      className="bg-white/10 hover:bg-white/20 py-4 rounded-xl text-white font-semibold"
+                      className="bg.white/10 hover:bg-white/20 py-4 rounded-xl text-white font-semibold"
                     >
                       Template
                     </button>
                     <button
                       onClick={exportTrainingData}
-                      className="bg-white/10 hover:bg-white/20 py-4 rounded-xl text-white font-semibold"
+                      className="bg-white/10 hover:bg-white/20 py-4 rounded-xl text.white font-semibold"
                     >
                       Export Data
                     </button>
@@ -1287,7 +1446,6 @@ const SportsPredictionModel = () => {
                     </button>
                   </div>
 
-                  {/* NEW: Export Model JSON */}
                   <button
                     onClick={downloadModelJSON}
                     disabled={!modelTrained}
@@ -1309,7 +1467,7 @@ const SportsPredictionModel = () => {
             </div>
 
             {modelTrained && (
-              <div className="bg-white/5 rounded-2xl p-8 border border-white/10">
+              <div className="bg-white/5 rounded-2xl p-8 border border.white/10">
                 <h2 className="text-3xl font-bold text-white mb-8 flex items-center gap-4">
                   <Target className="text-purple-400" /> Predict Matchup + Find +EV
                 </h2>
@@ -1338,9 +1496,7 @@ const SportsPredictionModel = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
                   <div className="col-span-full">
-                    <h3 className="text-xl font-bold text-yellow-300 mb-4">
-                      💰 Moneyline Odds
-                    </h3>
+                    <h3 className="text-xl font-bold text-yellow-300 mb-4">💰 Moneyline Odds</h3>
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-yellow-300 mb-2">
