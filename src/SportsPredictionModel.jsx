@@ -1307,29 +1307,29 @@ const SportsPredictionModel = () => {
                             BACKTEST COMPLETE — {backtestResult.gamesTested} GAMES
                           </h2>
 
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                            <div className="bg-black/40 rounded-2xl p-6 text-center">
-                              <p className="text-5xl font-bold text-green-400">
-                                {parseFloat(backtestResult.roi) > 0 ? '+' : ''}
-                                {backtestResult.roi}
-                              </p>
-                              <p className="text-xl text-gray-300 mt-2">
-                                ROI (Flat $100 bets)
-                              </p>
-                            </div>
-                            <div className="bg-black/40 rounded-2xl p-6 text-center">
-                              <p className="text-5xl font-bold text-yellow-400">
-                                ${backtestResult.totalProfit}
-                              </p>
-                              <p className="text-xl text-gray-300 mt-2">Net Profit</p>
-                            </div>
-                            <div className="bg-black/40 rounded-2xl p-6 text-center">
-                              <p className="text-5xl font-bold text-cyan-400">
-                                {backtestResult.totalBets}
-                              </p>
-                              <p className="text-xl text-gray-300 mt-2">+EV Bets Found</p>
-                            </div>
-                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-1 md:grid-cols-3 lg:grid-cols-3 gap-6 mb-8">
+  <div className="bg-black/40 rounded-2xl p-6 text-center">
+    <p className="text-4xl md:text-5xl lg:text-6xl font-bold text-green-400">
+      {parseFloat(backtestResult.roi) > 0 ? '+' : ''}{backtestResult.roi}
+    </p>
+    <p className="text-lg md:text-xl text-gray-300 mt-2">ROI (Flat $100 bets)</p>
+  </div>
+
+  <div className="bg-black/40 rounded-2xl p-6 text-center">
+    <p className="text-4xl md:text-5xl lg:text-6xl font-bold text-yellow-400">
+      ${backtestResult.totalProfit}
+    </p>
+    <p className="text-lg md:text-xl text-gray-300 mt-2">Net Profit</p>
+  </div>
+
+  <div className="bg-black/40 rounded-2xl p-6 text-center">
+    <p className="text-4xl md:text-5xl lg:text-6xl font-bold text-cyan-400">
+      {backtestResult.totalBets}
+    </p>
+    <p className="text-lg md:text-xl text-gray-300 mt-2">+EV Bets Found</p>
+  </div>
+</div>
+
 
                           <div className="grid grid-cols-3 gap-4 text-center">
                             {Object.entries(backtestResult.bets).map(
